@@ -7,7 +7,7 @@ import {
   User, Send, Plus, Phone, PhoneOff, FileText, 
   Copy, Check, Wifi, LogOut, ArrowRight, ShieldCheck, 
   FolderUp, Volume2, Mic, MicOff, RefreshCw, X, MessageSquare,
-  Lock, Flame, EyeOff, UploadCloud, Cpu, AlertTriangle, AlertCircle, Palette, Users
+  Lock, Flame, EyeOff, UploadCloud, Cpu, AlertTriangle, AlertCircle, Palette, Users, ArrowLeft
 } from 'lucide-react';
 import ParticleBackground from '@/components/ParticleBackground';
 
@@ -189,8 +189,21 @@ export default function ChatPage() {
   const rtcConfig = {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' }
-    ]
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
+      {
+        urls: [
+          'turn:openrelay.metered.ca:80',
+          'turn:openrelay.metered.ca:443',
+          'turn:openrelay.metered.ca:5222',
+          'turns:openrelay.metered.ca:443?transport=tcp'
+        ],
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      }
+    ],
+    iceCandidatePoolSize: 10
   };
 
   // Helper: Convert text to scrambled hexadecimal array string
@@ -1176,23 +1189,59 @@ export default function ChatPage() {
     }
   };
 
+  // Pre-bless audio elements during user gesture (clicks) to bypass iOS/Safari autoplay block
+  const blessPeerAudio = (peerId: string) => {
+    const upperPeer = peerId.toUpperCase();
+    try {
+      let audioEl = document.getElementById(`audio-${upperPeer}`) as HTMLAudioElement;
+      if (!audioEl) {
+        audioEl = document.createElement('audio');
+        audioEl.id = `audio-${upperPeer}`;
+        audioEl.autoplay = true;
+        audioEl.style.display = 'none';
+        audioEl.setAttribute('playsinline', 'true');
+        document.body.appendChild(audioEl);
+      }
+      audioEl.muted = false;
+      audioEl.volume = 1.0;
+      // Play a tiny blank silent data URI to unlock audio channel
+      audioEl.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAAA';
+      audioEl.play().catch(() => {});
+    } catch (e) {}
+  };
+
   // iOS/Safari compatible hidden Audio mix player for P2P mesh
   const playRemoteAudio = (peerId: string, stream: MediaStream) => {
-    let audioEl = document.getElementById(`audio-${peerId}`) as HTMLAudioElement;
+    const upperPeer = peerId.toUpperCase();
+    let audioEl = document.getElementById(`audio-${upperPeer}`) as HTMLAudioElement;
     if (!audioEl) {
       audioEl = document.createElement('audio');
-      audioEl.id = `audio-${peerId}`;
+      audioEl.id = `audio-${upperPeer}`;
       audioEl.autoplay = true;
       audioEl.style.display = 'none';
       audioEl.setAttribute('playsinline', 'true');
       document.body.appendChild(audioEl);
     }
     audioEl.srcObject = stream;
-    audioEl.play().catch(e => console.error('Audio playback error:', e));
+    audioEl.muted = false;
+    audioEl.volume = 1.0;
+    audioEl.play().catch(e => {
+      console.warn('Audio autoplay blocked, registering user gesture trigger:', e);
+      setSidebarError('Audio blocked. Tap anywhere on screen to unmute/activate call audio.');
+      setTimeout(() => setSidebarError(''), 6000);
+      const resumeAudio = () => {
+        audioEl.play().catch(() => {});
+        document.removeEventListener('click', resumeAudio);
+        document.removeEventListener('touchstart', resumeAudio);
+      };
+      document.addEventListener('click', resumeAudio);
+      document.addEventListener('touchstart', resumeAudio);
+    });
   };
 
   const stopRemoteAudio = (peerId: string) => {
-    const audioEl = document.getElementById(`audio-${peerId}`);
+    const upperPeer = peerId.toUpperCase();
+    const audioEl = document.getElementById(`audio-${upperPeer}`);
     if (audioEl) {
       audioEl.remove();
     }
@@ -1200,13 +1249,14 @@ export default function ChatPage() {
 
   // WebRTC Voice call E2E Mesh methods
   const initiateVoiceCallToPeer = async (peerId: string, stream: MediaStream) => {
-    if (!currentUser || voicePcsRef.current.has(peerId)) return;
+    const upperPeer = peerId.toUpperCase();
+    if (!currentUser || voicePcsRef.current.has(upperPeer)) return;
     const myConnectId = currentUser.connectId;
 
     try {
       const pc = new RTCPeerConnection(rtcConfig);
-      voicePcsRef.current.set(peerId, pc);
-      voiceIceQueuesRef.current.set(peerId, []);
+      voicePcsRef.current.set(upperPeer, pc);
+      voiceIceQueuesRef.current.set(upperPeer, []);
 
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
@@ -1214,7 +1264,7 @@ export default function ChatPage() {
         if (event.candidate) {
           socketRef.current?.emit('webrtc-ice-candidate', {
             senderConnectId: myConnectId,
-            recipientConnectId: peerId,
+            recipientConnectId: upperPeer,
             candidate: {
               candidate: event.candidate.candidate,
               sdpMid: event.candidate.sdpMid,
@@ -1227,7 +1277,10 @@ export default function ChatPage() {
 
       pc.ontrack = (event) => {
         if (event.streams && event.streams[0]) {
-          playRemoteAudio(peerId, event.streams[0]);
+          playRemoteAudio(upperPeer, event.streams[0]);
+        } else if (event.track) {
+          const newStream = new MediaStream([event.track]);
+          playRemoteAudio(upperPeer, newStream);
         }
       };
 
@@ -1236,7 +1289,7 @@ export default function ChatPage() {
 
       socketRef.current?.emit('webrtc-offer', {
         senderConnectId: myConnectId,
-        recipientConnectId: peerId,
+        recipientConnectId: upperPeer,
         offer,
         type: 'voice'
       });
@@ -1248,11 +1301,12 @@ export default function ChatPage() {
   const acceptVoiceCallFromPeer = async (peerId: string, offer: RTCSessionDescriptionInit, stream: MediaStream) => {
     if (!currentUser) return;
     const myConnectId = currentUser.connectId;
+    const upperPeer = peerId.toUpperCase();
 
     try {
       const pc = new RTCPeerConnection(rtcConfig);
-      voicePcsRef.current.set(peerId, pc);
-      voiceIceQueuesRef.current.set(peerId, []);
+      voicePcsRef.current.set(upperPeer, pc);
+      voiceIceQueuesRef.current.set(upperPeer, []);
 
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
@@ -1260,7 +1314,7 @@ export default function ChatPage() {
         if (event.candidate) {
           socketRef.current?.emit('webrtc-ice-candidate', {
             senderConnectId: myConnectId,
-            recipientConnectId: peerId,
+            recipientConnectId: upperPeer,
             candidate: {
               candidate: event.candidate.candidate,
               sdpMid: event.candidate.sdpMid,
@@ -1273,18 +1327,21 @@ export default function ChatPage() {
 
       pc.ontrack = (event) => {
         if (event.streams && event.streams[0]) {
-          playRemoteAudio(peerId, event.streams[0]);
+          playRemoteAudio(upperPeer, event.streams[0]);
+        } else if (event.track) {
+          const newStream = new MediaStream([event.track]);
+          playRemoteAudio(upperPeer, newStream);
         }
       };
 
       await pc.setRemoteDescription(new RTCSessionDescription(offer));
 
-      const queue = voiceIceQueuesRef.current.get(peerId) || [];
+      const queue = voiceIceQueuesRef.current.get(upperPeer) || [];
       if (queue.length > 0) {
         for (const cand of queue) {
           await pc.addIceCandidate(cand).catch(e => console.error(e));
         }
-        voiceIceQueuesRef.current.set(peerId, []);
+        voiceIceQueuesRef.current.set(upperPeer, []);
       }
 
       const answer = await pc.createAnswer();
@@ -1292,7 +1349,7 @@ export default function ChatPage() {
 
       socketRef.current?.emit('webrtc-answer', {
         senderConnectId: myConnectId,
-        recipientConnectId: peerId,
+        recipientConnectId: upperPeer,
         answer,
         type: 'voice'
       });
@@ -1309,7 +1366,20 @@ export default function ChatPage() {
       username: activePeer ? activePeer.username : `Group: ${activeGroup}`
     });
 
+    // Bless audio tags during this user gesture to unblock iOS/Safari autoplay blocks
+    if (activePeer) {
+      blessPeerAudio(activePeer.connectId);
+    } else if (activeGroup) {
+      groupMembers.forEach((peerId) => blessPeerAudio(peerId));
+    }
+
     try {
+      if (!navigator?.mediaDevices?.getUserMedia) {
+        setSidebarError('Audio calling requires a secure connection (HTTPS) or localhost on this browser/device.');
+        setTimeout(() => setSidebarError(''), 6000);
+        cleanupCall();
+        return;
+      }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       localStreamRef.current = stream;
 
@@ -1330,7 +1400,19 @@ export default function ChatPage() {
   const acceptCall = async () => {
     if (!callerDetails || !currentUser) return;
 
+    // Bless the caller's audio element and any other group call members
+    blessPeerAudio(callerDetails.connectId);
+    if (activeGroup) {
+      groupMembers.forEach((peerId) => blessPeerAudio(peerId));
+    }
+
     try {
+      if (!navigator?.mediaDevices?.getUserMedia) {
+        setSidebarError('Audio calling requires a secure connection (HTTPS) or localhost on this browser/device.');
+        setTimeout(() => setSidebarError(''), 6000);
+        cleanupCall();
+        return;
+      }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       localStreamRef.current = stream;
 
@@ -1546,7 +1628,9 @@ export default function ChatPage() {
         {currentUser && (
           <>
             {/* Left Side: Sidebar Panel */}
-            <aside className="w-full md:w-80 sm:w-96 shrink-0 flex flex-col gap-4 overflow-hidden h-full">
+            <aside className={`w-full md:w-80 sm:w-96 shrink-0 flex flex-col gap-4 overflow-y-auto h-full pr-1 ${
+              (activePeer || activeGroup) ? 'hidden md:flex' : 'flex'
+            }`}>
               
               {/* Burn Protocol Toggle & Panic button */}
               <div className="glass-panel rounded-2xl p-4 sm:p-5 flex flex-col gap-3.5 antigravity-2">
@@ -1760,7 +1844,9 @@ export default function ChatPage() {
             </aside>
 
             {/* Right Side: Chat Session Panel */}
-            <main className="flex-grow glass-panel rounded-2xl flex flex-col overflow-hidden h-full relative antigravity-3">
+            <main className={`flex-grow glass-panel rounded-2xl flex flex-col overflow-hidden h-full relative antigravity-3 ${
+              (activePeer || activeGroup) ? 'flex' : 'hidden md:flex'
+            }`}>
               {(activePeer || activeGroup) ? (
                 <div 
                   className={`flex-grow flex flex-col h-full overflow-hidden relative ${
@@ -1782,14 +1868,30 @@ export default function ChatPage() {
 
                   {/* Active Chat Header */}
                   <div className="p-4 sm:p-5 border-b border-white/10 flex items-center justify-between shrink-0 bg-white/1">
-                    <div className="truncate flex items-center gap-3">
+                    <div className="truncate flex items-center gap-2 sm:gap-3">
+                      {/* Back button on mobile */}
+                      <button
+                        onClick={() => {
+                          setActivePeer(null);
+                          setActiveGroup(null);
+                        }}
+                        className="md:hidden p-2 rounded-lg border border-white/5 bg-white/2 hover:bg-white/5 text-zinc-400 hover:text-white transition-all duration-200 cursor-pointer mr-1 flex items-center justify-center shrink-0"
+                        title="Back to Contacts"
+                      >
+                        <ArrowLeft className="w-4 h-4" />
+                      </button>
+
                       <div className="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 font-bold text-sm shrink-0">
                         {activePeer ? (activePeer.username?.charAt(0).toUpperCase() || 'P') : 'G'}
                       </div>
                       <div className="truncate">
                         <h2 className="font-bold text-sm text-zinc-100 flex items-center gap-2 leading-none">
                           {activePeer ? activePeer.username : `Group: ${activeGroup}`}
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                          <span className={`w-1.5 h-1.5 rounded-full ${
+                            activeGroup 
+                              ? (chatChannelsRef.current.size > 0 ? 'bg-emerald-450 animate-pulse' : 'bg-amber-400 animate-pulse')
+                              : (chatActive ? 'bg-emerald-450 animate-pulse' : (activePeer?.status === 'offline' ? 'bg-red-500' : 'bg-amber-400 animate-pulse'))
+                          }`} />
                         </h2>
                         <span className="font-mono text-[10px] text-zinc-500 tracking-widest mt-1 block">
                           {activePeer ? `Connect ID: ${activePeer.connectId}` : `Members online: ${groupMembers.length + 1}`}
@@ -1864,9 +1966,31 @@ export default function ChatPage() {
                   {/* ENCRYPTED MESSAGE TUBES */}
                   <div className="flex-grow overflow-y-auto p-4 sm:p-5 space-y-4">
                     <div className="flex items-center justify-center flex-col gap-1.5">
-                      <span className="text-[10px] font-bold text-zinc-600 bg-white/1 border border-white/5 rounded-full px-3 py-1 uppercase tracking-widest flex items-center gap-1.5">
-                        <Lock className="w-3 h-3 text-blue-500" /> E2E direct P2P link verified
-                      </span>
+                      {activeGroup ? (
+                        chatChannelsRef.current.size > 0 ? (
+                          <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/5 border border-emerald-500/10 rounded-full px-3 py-1 uppercase tracking-widest flex items-center gap-1.5 animate-pulse">
+                            <Lock className="w-3 h-3 text-emerald-400" /> E2E P2P Mesh Active ({chatChannelsRef.current.size} Connected)
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-bold text-amber-500 bg-amber-500/5 border border-amber-500/10 rounded-full px-3 py-1 uppercase tracking-widest flex items-center gap-1.5">
+                            <Cpu className="w-3 h-3 text-amber-500 animate-spin" /> Connecting to P2P Mesh...
+                          </span>
+                        )
+                      ) : (
+                        chatActive ? (
+                          <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/5 border border-emerald-500/10 rounded-full px-3 py-1 uppercase tracking-widest flex items-center gap-1.5 animate-pulse">
+                            <Lock className="w-3 h-3 text-emerald-400" /> E2E direct P2P link verified
+                          </span>
+                        ) : activePeer?.status === 'offline' ? (
+                          <span className="text-[10px] font-bold text-red-400 bg-red-500/5 border border-red-500/10 rounded-full px-3 py-1 uppercase tracking-widest flex items-center gap-1.5">
+                            <AlertTriangle className="w-3 h-3 text-red-400" /> Peer is offline
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-bold text-amber-500 bg-amber-500/5 border border-amber-500/10 rounded-full px-3 py-1 uppercase tracking-widest flex items-center gap-1.5">
+                            <Cpu className="w-3 h-3 text-amber-500 animate-spin" /> Establishing E2E P2P Tunnel...
+                          </span>
+                        )
+                      )}
                       {burnModeActive && (
                         <span className="text-[9px] font-bold text-red-400 bg-red-500/5 border border-red-500/10 rounded-full px-2 py-0.5 uppercase tracking-widest">
                           ⚡ Volatile Mode: Messages exist strictly in local RAM
