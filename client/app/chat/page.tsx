@@ -45,6 +45,9 @@ interface Peer {
 
 // Dynamic backend host resolution (supports localhost, LAN IPs, and custom domains)
 const getBackendUrl = () => {
+  if (process.env.NEXT_PUBLIC_BACKEND_URL) {
+    return process.env.NEXT_PUBLIC_BACKEND_URL;
+  }
   if (typeof window === 'undefined') return 'http://localhost:5000';
   const hostname = window.location.hostname;
   return `http://${hostname}:5000`;

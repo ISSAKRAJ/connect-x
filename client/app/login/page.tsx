@@ -5,6 +5,9 @@ import { useRouter } from 'next/navigation';
 import { Key, User, PlusCircle, ArrowRight, Copy, Check, Info, LogOut } from 'lucide-react';
 
 const getBackendUrl = () => {
+  if (process.env.NEXT_PUBLIC_BACKEND_URL) {
+    return process.env.NEXT_PUBLIC_BACKEND_URL;
+  }
   if (typeof window === 'undefined') return 'http://localhost:5000';
   const hostname = window.location.hostname;
   return `http://${hostname}:5000`;
