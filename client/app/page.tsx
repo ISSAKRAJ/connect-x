@@ -239,7 +239,7 @@ export default function LandingPage() {
           </div>
 
           {/* Features Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto">
             
             {/* Feature 1: Voice calling */}
             <ScrollReveal className="h-full" delay={0}>
@@ -268,22 +268,6 @@ export default function LandingPage() {
                   <p className="text-zinc-400 text-xs sm:text-sm leading-relaxed">
                     Send files of any size directly from memory. Files are read as chunks, fed through E2E data channels, 
                     and flushed immediately. Files never touch a cloud storage folder.
-                  </p>
-                </div>
-              </div>
-            </ScrollReveal>
-
-            {/* Feature 3: Drawing sandbox */}
-            <ScrollReveal className="h-full" delay={300}>
-              <div className="h-full glass-panel border border-white/5 hover:border-blue-500/25 hover:shadow-[0_0_30px_rgba(59,130,246,0.05)] rounded-2xl p-8 flex flex-col gap-5 transition-all duration-300 group">
-                <div className="w-12 h-12 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 group-hover:bg-blue-500 group-hover:text-white transition-all duration-300">
-                  <Palette className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-bold text-white mb-2">P2P Sandbox Sketchpad</h3>
-                  <p className="text-zinc-400 text-xs sm:text-sm leading-relaxed">
-                    Collaborate visually on a secure sandbox canvas. Drawing lines and pointer coordinates are streamed 
-                    instantaneously via data channels. Purge operations wipe coordinates completely.
                   </p>
                 </div>
               </div>
@@ -346,7 +330,7 @@ export default function LandingPage() {
                     </div>
                     <div className="flex items-center gap-2 text-zinc-500">
                       <span>↳</span>
-                      <span>Direct connection: Voice, File, Canvas</span>
+                      <span>Direct connection: Voice, File, Chat</span>
                     </div>
                   </div>
 
@@ -359,7 +343,7 @@ export default function LandingPage() {
                 {/* Explanatory footer inside schema */}
                 <div className="pt-2 text-[10px] text-zinc-500 leading-relaxed">
                   // Connect X implements passwordless authentication. Identities are tied to public keys. 
-                  All chats, voice streams, and sketchpad data exist purely in device memory and are destroyed permanently on tab closure.
+                  All chats, voice streams, and local message data exist purely in device memory and are destroyed permanently on tab closure.
                 </div>
 
               </div>
@@ -386,7 +370,7 @@ export default function LandingPage() {
                   <div>
                     <h4 className="text-sm font-bold text-white mb-1">RAM Ephemerality</h4>
                     <p className="text-zinc-500 text-xs leading-relaxed">
-                      All messages, active files, and sandbox strokes are kept in temporary browser state and wiped immediately.
+                      All messages and active files are kept in temporary browser state and wiped immediately.
                     </p>
                   </div>
                 </div>
