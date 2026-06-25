@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: connect-x-backend
+    env: node
+    plan: free
+    buildCommand: cd server && npm install && npx prisma generate && npx prisma db push
+    startCommand: cd server && node server.js
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        value: file:/var/data/dev.db
+    disk:
+      name: sqlite-db
+      mountPath: /var/data
+      sizeGB: 1
