@@ -11,8 +11,15 @@ const getBackendUrl = () => {
   if (typeof window === 'undefined') return 'http://localhost:5000';
   const hostname = window.location.hostname;
   
-  // Local development detection
-  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+  // Detect if running on localhost or local LAN IP (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+  const isLocal = 
+    hostname === 'localhost' || 
+    hostname === '127.0.0.1' || 
+    hostname.startsWith('192.168.') || 
+    hostname.startsWith('10.') || 
+    /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname);
+
+  if (isLocal) {
     return `http://${hostname}:5000`;
   }
   
