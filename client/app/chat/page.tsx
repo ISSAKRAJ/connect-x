@@ -577,6 +577,8 @@ export default function ChatPage() {
               await pc.addIceCandidate(cand).catch(e => console.error(e));
             }
             voiceIceQueuesRef.current.set(sender, []);
+            setCallState('connected');
+            startCallTimer();
             return;
           }
         }
@@ -691,12 +693,21 @@ export default function ChatPage() {
 
   // Trigger P2P Chat Connection when activePeer is online
   useEffect(() => {
-    cleanupChatConnection();
     if (activePeer && activePeer.status === 'online' && currentUser) {
+      const upperPeer = activePeer.connectId.toUpperCase();
+      const existingChannel = chatChannelsRef.current.get(upperPeer);
+      if (existingChannel && existingChannel.readyState === 'open') {
+        setChatActive(true);
+        return;
+      }
+
+      setChatActive(false);
       const timer = setTimeout(() => {
-        initiateChatConnection(activePeer.connectId);
+        initiateChatConnection(upperPeer);
       }, 500);
       return () => clearTimeout(timer);
+    } else {
+      setChatActive(false);
     }
   }, [activePeer?.connectId, activePeer?.status]);
 
