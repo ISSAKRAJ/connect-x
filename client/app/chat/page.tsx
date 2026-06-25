@@ -7,7 +7,7 @@ import {
   User, Send, Plus, Phone, PhoneOff, FileText, 
   Copy, Check, Wifi, LogOut, ArrowRight, ShieldCheck, 
   FolderUp, Volume2, Mic, MicOff, RefreshCw, X, MessageSquare,
-  Lock, Flame, EyeOff, UploadCloud, Cpu, AlertTriangle, AlertCircle, Palette
+  Lock, Flame, EyeOff, UploadCloud, Cpu, AlertTriangle, AlertCircle, Palette, Users
 } from 'lucide-react';
 import ParticleBackground from '@/components/ParticleBackground';
 
@@ -114,12 +114,11 @@ export default function ChatPage() {
 
 
 
-  // Drawing Sandbox states
-  const [sandboxActive, setSandboxActive] = useState(false);
-  const [brushColor, setBrushColor] = useState('#3b82f6'); // default Neon Blue
-  const [brushSize, setBrushSize] = useState(4);
-  const [peerDrawingCursor, setPeerDrawingCursor] = useState<{ x: number; y: number } | null>(null);
-  const [sandboxGlitch, setSandboxGlitch] = useState(false);
+  // Ephemeral Group states
+  const [activeGroup, setActiveGroup] = useState<string | null>(null);
+  const [groups, setGroups] = useState<string[]>([]);
+  const [groupIdInput, setGroupIdInput] = useState('');
+  const [groupMembers, setGroupMembers] = useState<string[]>([]);
 
   // Burn Protocol Volatile state
   const [burnModeActive, setBurnModeActive] = useState(true);
@@ -144,7 +143,7 @@ export default function ChatPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // WebRTC Audio Refs
-  const pcRef = useRef<RTCPeerConnection | null>(null);
+  const pcRef = useRef<RTCPeerConnection | null>(null); // fallback single pc
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -157,31 +156,35 @@ export default function ChatPage() {
   const receivedSizeRef = useRef<number>(0);
   const fileMetadataRef = useRef<{ filename: string; filetype: string; filesize: number } | null>(null);
 
-  // WebRTC Drawing Sandbox Refs
-  const sandboxPcRef = useRef<RTCPeerConnection | null>(null);
-  const sandboxChannelRef = useRef<RTCDataChannel | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const isDrawingRef = useRef(false);
-  const lastX = useRef(0);
-  const lastY = useRef(0);
-  const peerLastX = useRef(0);
-  const peerLastY = useRef(0);
+  // WebRTC Chat & Voice Multi-peer Maps
+  const chatPcsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const chatChannelsRef = useRef<Map<string, RTCDataChannel>>(new Map());
+  const chatIceQueuesRef = useRef<Map<string, RTCIceCandidate[]>>(new Map());
+  const voicePcsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const voiceIceQueuesRef = useRef<Map<string, RTCIceCandidate[]>>(new Map());
 
-  // WebRTC ICE Queues
+  // WebRTC Single-peer fallback Ice Queues
   const voiceIceQueueRef = useRef<RTCIceCandidate[]>([]);
   const fileIceQueueRef = useRef<RTCIceCandidate[]>([]);
-  const sandboxIceQueueRef = useRef<RTCIceCandidate[]>([]);
+  const chatIceQueueRef = useRef<RTCIceCandidate[]>([]);
+
+  // WebRTC Chat States & Refs
+  const [chatActive, setChatActive] = useState(false);
+  const chatPcRef = useRef<RTCPeerConnection | null>(null);
+  const chatChannelRef = useRef<RTCDataChannel | null>(null);
 
   // State Tracking Refs
   const callStateRef = useRef(callState);
   const peersRef = useRef(peers);
   const activePeerRef = useRef(activePeer);
   const currentUserRef = useRef(currentUser);
+  const activeGroupRef = useRef(activeGroup);
 
   useEffect(() => { callStateRef.current = callState; }, [callState]);
   useEffect(() => { peersRef.current = peers; }, [peers]);
   useEffect(() => { activePeerRef.current = activePeer; }, [activePeer]);
   useEffect(() => { currentUserRef.current = currentUser; }, [currentUser]);
+  useEffect(() => { activeGroupRef.current = activeGroup; }, [activeGroup]);
 
   const rtcConfig = {
     iceServers: [
@@ -342,24 +345,8 @@ export default function ChatPage() {
         peerUsername,
         peerId: peerConnectId
       });
-
       setPendingRequests(prev => prev.filter(r => r.senderConnectId !== peerConnectId));
       fetchConnections();
-    });
-
-    socket.on('receive-message', ({ senderConnectId, text, timestamp }) => {
-      setMessages(prev => {
-        const chatList = prev[senderConnectId] || [];
-        return {
-          ...prev,
-          [senderConnectId]: [...chatList, {
-            senderConnectId,
-            text,
-            timestamp,
-            scrambledText: scrambleToHex(text)
-          }]
-        };
-      });
     });
 
     socket.on('peer-status', ({ connectId, status }) => {
@@ -371,14 +358,60 @@ export default function ChatPage() {
       }));
     });
 
+    // Group matchmaking signaling
+    socket.on('group-joined', ({ groupId, members }) => {
+      setGroups(prev => {
+        if (prev.includes(groupId)) return prev;
+        return [...prev, groupId];
+      });
+      setActiveGroup(groupId);
+      setActivePeer(null);
+      setGroupMembers(members);
+      setSidebarSuccess(`Joined Group: ${groupId}`);
+      setTimeout(() => setSidebarSuccess(''), 3000);
+
+      // As the new joiner, we initiate peer connections to everyone else in the group
+      members.forEach((peerId: string) => {
+        initiateChatConnection(peerId);
+      });
+    });
+
+    socket.on('group-member-joined', ({ connectId, username }) => {
+      setGroupMembers(prev => {
+        if (prev.includes(connectId)) return prev;
+        return [...prev, connectId];
+      });
+      setSidebarSuccess(`${username} joined the group.`);
+      setTimeout(() => setSidebarSuccess(''), 3000);
+    });
+
+    socket.on('group-member-left', ({ connectId }) => {
+      setGroupMembers(prev => prev.filter(id => id !== connectId));
+      cleanupPeerChat(connectId);
+      stopRemoteAudio(connectId);
+      const pc = voicePcsRef.current.get(connectId);
+      if (pc) {
+        pc.close();
+        voicePcsRef.current.delete(connectId);
+      }
+    });
+
     // WebRTC Offer Receiver
-    socket.on('webrtc-offer', async ({ senderConnectId, offer }) => {
-      const isAudio = offer.sdp && offer.sdp.includes('m=audio');
-      const isSandbox = offer.sdp && offer.sdp.includes('s=sandbox');
+    socket.on('webrtc-offer', async ({ senderConnectId, offer, type }) => {
+      const isAudio = type === 'voice' || (offer.sdp && offer.sdp.includes('m=audio'));
+      const isChat = type === 'chat' || (offer.sdp && offer.sdp.includes('s=chat'));
+      const isFile = type === 'file' || (offer.sdp && offer.sdp.includes('s=file'));
       
       if (isAudio) {
         // Voice call offer routing
-        if (callStateRef.current !== 'idle') {
+        if (callStateRef.current !== 'idle' && callStateRef.current !== 'incoming') {
+          // If already in a call, we accept the call automatically if in group call mesh
+          if (activePeerRef.current || activeGroupRef.current) {
+            if (localStreamRef.current) {
+              await acceptVoiceCallFromPeer(senderConnectId, offer, localStreamRef.current);
+              return;
+            }
+          }
           socket.emit('call-terminated', {
             senderConnectId: currentUserRef.current?.connectId || '',
             recipientConnectId: senderConnectId
@@ -391,12 +424,10 @@ export default function ChatPage() {
         setCallState('incoming');
         (window as any).incomingOffer = offer;
       } 
-      else if (isSandbox) {
-        // Drawing Sandbox tunnel offer routing
-        handleIncomingSandboxOffer(offer, senderConnectId);
-      } 
-      else {
-        // P2P Data File channel offer routing
+      else if (isChat) {
+        handleIncomingChatOffer(offer, senderConnectId);
+      }
+      else if (isFile) {
         setFileTransfer({
           name: 'Incoming File...',
           size: 0,
@@ -453,7 +484,7 @@ export default function ChatPage() {
                     progress: 0,
                     bytesTransferred: 0
                   } : null);
-                } else if (msg.type === 'EOF') {
+                } else if (msg.type === 'FILE_END') {
                   const meta = fileMetadataRef.current;
                   if (meta) {
                     const blob = new Blob(receivedChunksRef.current, { type: meta.filetype });
@@ -507,7 +538,8 @@ export default function ChatPage() {
             socket.emit('webrtc-answer', {
               senderConnectId: currentUserRef.current.connectId,
               recipientConnectId: senderConnectId,
-              answer
+              answer,
+              type: 'file'
             });
           }
         } catch (err) {
@@ -520,8 +552,37 @@ export default function ChatPage() {
     });
 
     // WebRTC Answer Receiver
-    socket.on('webrtc-answer', async ({ answer }) => {
-      if (pcRef.current && pcRef.current.signalingState === 'have-local-offer') {
+    socket.on('webrtc-answer', async ({ answer, type, senderConnectId }) => {
+      if (senderConnectId) {
+        const sender = senderConnectId.toUpperCase();
+        if (type === 'voice') {
+          const pc = voicePcsRef.current.get(sender);
+          if (pc && pc.signalingState === 'have-local-offer') {
+            await pc.setRemoteDescription(new RTCSessionDescription(answer));
+            const queue = voiceIceQueuesRef.current.get(sender) || [];
+            for (const cand of queue) {
+              await pc.addIceCandidate(cand).catch(e => console.error(e));
+            }
+            voiceIceQueuesRef.current.set(sender, []);
+            return;
+          }
+        }
+        if (type === 'chat') {
+          const pc = chatPcsRef.current.get(sender);
+          if (pc && pc.signalingState === 'have-local-offer') {
+            await pc.setRemoteDescription(new RTCSessionDescription(answer));
+            const queue = chatIceQueuesRef.current.get(sender) || [];
+            for (const cand of queue) {
+              await pc.addIceCandidate(cand).catch(e => console.error(e));
+            }
+            chatIceQueuesRef.current.set(sender, []);
+            return;
+          }
+        }
+      }
+
+      // Fallback single connection handlers
+      if ((type === 'voice' || !type) && pcRef.current && pcRef.current.signalingState === 'have-local-offer') {
         await pcRef.current.setRemoteDescription(new RTCSessionDescription(answer));
         setCallState('connected');
         startCallTimer();
@@ -533,7 +594,7 @@ export default function ChatPage() {
           voiceIceQueueRef.current = [];
         }
       } 
-      else if (filePcRef.current && filePcRef.current.signalingState === 'have-local-offer') {
+      else if ((type === 'file' || !type) && filePcRef.current && filePcRef.current.signalingState === 'have-local-offer') {
         await filePcRef.current.setRemoteDescription(new RTCSessionDescription(answer));
         setFileTransfer(prev => prev ? { ...prev, status: 'transferring' } : null);
 
@@ -544,46 +605,52 @@ export default function ChatPage() {
           fileIceQueueRef.current = [];
         }
       }
-      else if (sandboxPcRef.current && sandboxPcRef.current.signalingState === 'have-local-offer') {
-        await sandboxPcRef.current.setRemoteDescription(new RTCSessionDescription(answer));
-        setSandboxActive(true);
-
-        if (sandboxIceQueueRef.current.length > 0) {
-          for (const cand of sandboxIceQueueRef.current) {
-            await sandboxPcRef.current.addIceCandidate(cand).catch(e => console.error(e));
-          }
-          sandboxIceQueueRef.current = [];
-        }
-      }
     });
 
     // WebRTC ICE Candidate Receiver
-    socket.on('webrtc-ice-candidate', async ({ candidate }) => {
+    socket.on('webrtc-ice-candidate', async ({ candidate, senderConnectId }) => {
       try {
         const iceCandidate = new RTCIceCandidate(candidate);
         const type = (candidate as any).type;
-        
-        if ((type === 'voice' || !type) && pcRef.current) {
-          if (pcRef.current.remoteDescription) {
-            await pcRef.current.addIceCandidate(iceCandidate);
+        const sender = senderConnectId ? senderConnectId.toUpperCase() : '';
+
+        if (type === 'voice' || !type) {
+          if (sender && voicePcsRef.current.has(sender)) {
+            const pc = voicePcsRef.current.get(sender);
+            if (pc && pc.remoteDescription) {
+              await pc.addIceCandidate(iceCandidate);
+            } else {
+              const queue = voiceIceQueuesRef.current.get(sender) || [];
+              queue.push(iceCandidate);
+              voiceIceQueuesRef.current.set(sender, queue);
+            }
           } else {
-            voiceIceQueueRef.current.push(iceCandidate);
+            if (pcRef.current && pcRef.current.remoteDescription) {
+              await pcRef.current.addIceCandidate(iceCandidate);
+            } else {
+              voiceIceQueueRef.current.push(iceCandidate);
+            }
           }
         }
         
-        if ((type === 'file' || !type) && filePcRef.current) {
-          if (filePcRef.current.remoteDescription) {
+        if (type === 'chat' || !type) {
+          if (sender && chatPcsRef.current.has(sender)) {
+            const pc = chatPcsRef.current.get(sender);
+            if (pc && pc.remoteDescription) {
+              await pc.addIceCandidate(iceCandidate);
+            } else {
+              const queue = chatIceQueuesRef.current.get(sender) || [];
+              queue.push(iceCandidate);
+              chatIceQueuesRef.current.set(sender, queue);
+            }
+          }
+        }
+        
+        if (type === 'file' || !type) {
+          if (filePcRef.current && filePcRef.current.remoteDescription) {
             await filePcRef.current.addIceCandidate(iceCandidate);
           } else {
             fileIceQueueRef.current.push(iceCandidate);
-          }
-        }
-
-        if ((type === 'sandbox' || !type) && sandboxPcRef.current) {
-          if (sandboxPcRef.current.remoteDescription) {
-            await sandboxPcRef.current.addIceCandidate(iceCandidate);
-          } else {
-            sandboxIceQueueRef.current.push(iceCandidate);
           }
         }
       } catch (err) {
@@ -591,24 +658,39 @@ export default function ChatPage() {
       }
     });
 
-    socket.on('call-terminated', () => {
-      cleanupCall();
+    socket.on('call-terminated', ({ senderConnectId }) => {
+      if (senderConnectId) {
+        cleanupPeerVoice(senderConnectId.toUpperCase());
+      } else {
+        cleanupCall();
+      }
     });
 
     return () => {
       socket.disconnect();
       cleanupCall();
       cleanupFileConnection();
-      cleanupSandboxConnection();
+      chatPcsRef.current.forEach(pc => pc.close());
+      chatPcsRef.current.clear();
+      chatChannelsRef.current.clear();
     };
-  }, [currentUser?.connectId]);
+  }, [currentUser]);
+
+  // Trigger P2P Chat Connection when activePeer is online
+  useEffect(() => {
+    cleanupChatConnection();
+    if (activePeer && activePeer.status === 'online' && currentUser) {
+      const timer = setTimeout(() => {
+        initiateChatConnection(activePeer.connectId);
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [activePeer?.connectId, activePeer?.status]);
 
   // Auto scroll chat messaging viewport
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, activePeer]);
-
-
+  }, [messages, activePeer, activeGroup]);
 
   // Load database connections
   const fetchConnections = async () => {
@@ -638,7 +720,7 @@ export default function ChatPage() {
       });
 
       const peerList: Peer[] = [];
-      for (const peerId of Array.from(uniquePeerIds)) {
+      const fetchProfilesPromises = Array.from(uniquePeerIds).map(async (peerId) => {
         try {
           const profileRes = await fetch(`${BACKEND_URL}/api/users/login`, {
             method: 'POST',
@@ -647,14 +729,20 @@ export default function ChatPage() {
           });
           if (profileRes.ok) {
             const profile = await profileRes.json();
-            peerList.push({
+            return {
               connectId: profile.connectId,
               username: profile.username,
-              status: 'online'
-            });
+              status: 'online' as const
+            };
           }
         } catch (e) {}
-      }
+        return null;
+      });
+
+      const profiles = await Promise.all(fetchProfilesPromises);
+      profiles.forEach(p => {
+        if (p) peerList.push(p);
+      });
 
       setPeers(peerList);
     } catch (e) {
@@ -692,49 +780,251 @@ export default function ChatPage() {
     setGlitchActive(true);
     
     // Sever signaling channels
-    socketRef.current?.emit('call-terminated', {
-      senderConnectId: currentUser?.connectId || '',
-      recipientConnectId: activePeer?.connectId || ''
-    });
+    if (activePeer && currentUser) {
+      socketRef.current?.emit('call-terminated', {
+        senderConnectId: currentUser.connectId,
+        recipientConnectId: activePeer.connectId
+      });
+    }
 
     cleanupCall();
     cleanupFileConnection();
-    cleanupSandboxConnection();
+    chatPcsRef.current.forEach(pc => pc.close());
+    chatPcsRef.current.clear();
+    chatChannelsRef.current.clear();
 
     setTimeout(() => {
       // Complete state wipe
       setMessages({});
       setActivePeer(null);
+      setActiveGroup(null);
       setGlitchActive(false);
       setSidebarSuccess('Memory core purged. Session completely wiped.');
       setTimeout(() => setSidebarSuccess(''), 4000);
     }, 1500);
   };
 
-  // E2E chat text dispatch
+  // WebRTC E2E Direct P2P Chat & Voice mesh helper methods
+  const cleanupChatConnection = () => {
+    chatPcsRef.current.forEach((pc) => pc.close());
+    chatPcsRef.current.clear();
+    chatChannelsRef.current.forEach((dc) => dc.close());
+    chatChannelsRef.current.clear();
+    chatIceQueuesRef.current.clear();
+    setChatActive(false);
+  };
+
+  const cleanupPeerChat = (peerId: string) => {
+    const pc = chatPcsRef.current.get(peerId);
+    if (pc) {
+      pc.close();
+      chatPcsRef.current.delete(peerId);
+    }
+    const dc = chatChannelsRef.current.get(peerId);
+    if (dc) {
+      dc.close();
+      chatChannelsRef.current.delete(peerId);
+    }
+    chatIceQueuesRef.current.delete(peerId);
+    if (chatChannelsRef.current.size === 0) {
+      setChatActive(false);
+    }
+  };
+
+  const setupChatDataChannel = (dc: RTCDataChannel, peerId: string) => {
+    dc.onopen = () => {
+      setChatActive(true);
+    };
+
+    dc.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'CHAT_MESSAGE') {
+          const { text, timestamp, senderConnectId, groupId } = data;
+          const key = groupId || senderConnectId;
+          
+          setMessages(prev => {
+            const chatList = prev[key] || [];
+            return {
+              ...prev,
+              [key]: [...chatList, {
+                senderConnectId,
+                text,
+                timestamp,
+                scrambledText: scrambleToHex(text)
+              }]
+            };
+          });
+        }
+      } catch (err) {
+        console.error('Error parsing chat message:', err);
+      }
+    };
+
+    dc.onclose = () => {
+      cleanupPeerChat(peerId);
+    };
+
+    dc.onerror = () => {
+      cleanupPeerChat(peerId);
+    };
+  };
+
+  const initiateChatConnection = async (peerId: string) => {
+    if (!currentUser || chatChannelsRef.current.has(peerId)) return;
+    const myConnectId = currentUser.connectId;
+
+    try {
+      const pc = new RTCPeerConnection(rtcConfig);
+      chatPcsRef.current.set(peerId, pc);
+      chatIceQueuesRef.current.set(peerId, []);
+
+      const dc = pc.createDataChannel('chat', { ordered: true });
+      chatChannelsRef.current.set(peerId, dc);
+
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          socketRef.current?.emit('webrtc-ice-candidate', {
+            senderConnectId: myConnectId,
+            recipientConnectId: peerId,
+            candidate: {
+              candidate: event.candidate.candidate,
+              sdpMid: event.candidate.sdpMid,
+              sdpMLineIndex: event.candidate.sdpMLineIndex,
+              type: 'chat'
+            }
+          });
+        }
+      };
+
+      setupChatDataChannel(dc, peerId);
+
+      const offer = await pc.createOffer();
+      const modifiedSdp = offer.sdp?.replace(/s=-\r\n/, 's=chat\r\n') || offer.sdp;
+      const modifiedOffer = { type: offer.type, sdp: modifiedSdp };
+      await pc.setLocalDescription(new RTCSessionDescription(modifiedOffer));
+
+      socketRef.current?.emit('webrtc-offer', {
+        senderConnectId: myConnectId,
+        recipientConnectId: peerId,
+        offer: modifiedOffer,
+        type: 'chat'
+      });
+    } catch (err) {
+      console.error(`Chat connection to ${peerId} failed:`, err);
+      cleanupPeerChat(peerId);
+    }
+  };
+
+  const handleIncomingChatOffer = async (offer: RTCSessionDescriptionInit, senderConnectId: string) => {
+    try {
+      const pc = new RTCPeerConnection(rtcConfig);
+      chatPcsRef.current.set(senderConnectId, pc);
+      chatIceQueuesRef.current.set(senderConnectId, []);
+
+      pc.onicecandidate = (event) => {
+        if (event.candidate && currentUserRef.current) {
+          socketRef.current?.emit('webrtc-ice-candidate', {
+            senderConnectId: currentUserRef.current.connectId,
+            recipientConnectId: senderConnectId,
+            candidate: {
+              candidate: event.candidate.candidate,
+              sdpMid: event.candidate.sdpMid,
+              sdpMLineIndex: event.candidate.sdpMLineIndex,
+              type: 'chat'
+            }
+          });
+        }
+      };
+
+      pc.ondatachannel = (event) => {
+        if (event.channel.label === 'chat') {
+          chatChannelsRef.current.set(senderConnectId, event.channel);
+          setupChatDataChannel(event.channel, senderConnectId);
+        }
+      };
+
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+
+      const queue = chatIceQueuesRef.current.get(senderConnectId) || [];
+      if (queue.length > 0) {
+        for (const cand of queue) {
+          await pc.addIceCandidate(cand).catch(e => console.error(e));
+        }
+        chatIceQueuesRef.current.set(senderConnectId, []);
+      }
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      if (currentUserRef.current) {
+        socketRef.current?.emit('webrtc-answer', {
+          senderConnectId: currentUserRef.current.connectId,
+          recipientConnectId: senderConnectId,
+          answer,
+          type: 'chat'
+        });
+      }
+    } catch (err) {
+      console.error(`Incoming chat offer from ${senderConnectId} failed:`, err);
+      cleanupPeerChat(senderConnectId);
+    }
+  };
+
   const handleSendMessage = (textToSend: string) => {
-    if (!textToSend.trim() || !activePeer || !currentUser) return;
+    if (!textToSend.trim() || (!activePeer && !activeGroup) || !currentUser) return;
 
     const timestamp = new Date().toISOString();
-    
-    socketRef.current?.emit('send-message', {
+    const payloadObj = {
+      type: 'CHAT_MESSAGE',
       senderConnectId: currentUser.connectId,
-      recipientConnectId: activePeer.connectId,
-      text: textToSend.trim()
-    });
+      text: textToSend.trim(),
+      timestamp,
+      groupId: activeGroup || undefined
+    };
+    const payload = JSON.stringify(payloadObj);
 
-    setMessages(prev => {
-      const chatList = prev[activePeer.connectId] || [];
-      return {
-        ...prev,
-        [activePeer.connectId]: [...chatList, {
-          senderConnectId: currentUser.connectId,
-          text: textToSend.trim(),
-          timestamp,
-          scrambledText: scrambleToHex(textToSend)
-        }]
-      };
-    });
+    if (activePeer) {
+      const dc = chatChannelsRef.current.get(activePeer.connectId);
+      if (!dc || dc.readyState !== 'open') {
+        setSidebarError('Direct P2P Chat tunnel is not established yet. Waiting for peer...');
+        setTimeout(() => setSidebarError(''), 3000);
+        return;
+      }
+      dc.send(payload);
+
+      setMessages(prev => {
+        const chatList = prev[activePeer.connectId] || [];
+        return {
+          ...prev,
+          [activePeer.connectId]: [...chatList, {
+            senderConnectId: currentUser.connectId,
+            text: textToSend.trim(),
+            timestamp,
+            scrambledText: scrambleToHex(textToSend)
+          }]
+        };
+      });
+    } else if (activeGroup) {
+      chatChannelsRef.current.forEach((dc) => {
+        if (dc.readyState === 'open') {
+          dc.send(payload);
+        }
+      });
+
+      setMessages(prev => {
+        const chatList = prev[activeGroup] || [];
+        return {
+          ...prev,
+          [activeGroup]: [...chatList, {
+            senderConnectId: currentUser.connectId,
+            text: textToSend.trim(),
+            timestamp,
+            scrambledText: scrambleToHex(textToSend)
+          }]
+        };
+      });
+    }
 
     setMessageText('');
   };
@@ -752,7 +1042,6 @@ export default function ChatPage() {
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragOverZone(false);
-    
     const file = e.dataTransfer.files?.[0];
     if (file) {
       streamFileP2P(file);
@@ -761,6 +1050,7 @@ export default function ChatPage() {
 
   const streamFileP2P = async (file: File) => {
     if (!activePeer || !currentUser) return;
+    const myConnectId = currentUser.connectId;
 
     setFileTransfer({
       name: file.name,
@@ -783,7 +1073,7 @@ export default function ChatPage() {
       pc.onicecandidate = (event) => {
         if (event.candidate) {
           socketRef.current?.emit('webrtc-ice-candidate', {
-            senderConnectId: currentUser.connectId,
+            senderConnectId: myConnectId,
             recipientConnectId: activePeer.connectId,
             candidate: {
               candidate: event.candidate.candidate,
@@ -805,26 +1095,40 @@ export default function ChatPage() {
           filesize: file.size
         }));
 
-        const CHUNK_SIZE = 16384;
+        const CHUNK_SIZE = 16384; // 16KB
         let offset = 0;
         const fileReader = new FileReader();
 
+        dc.bufferedAmountLowThreshold = 65536; // 64KB low water mark
+        let isPaused = false;
+
+        dc.onbufferedamountlow = () => {
+          if (isPaused) {
+            isPaused = false;
+            sendNextChunk();
+          }
+        };
+
         const sendNextChunk = () => {
           if (offset >= file.size) {
-            dc.send(JSON.stringify({ type: 'EOF' }));
+            dc.send(JSON.stringify({ type: 'FILE_END' }));
             setFileTransfer(prev => prev ? { ...prev, progress: 100, status: 'completed' } : null);
             setTimeout(() => setFileTransfer(null), 3000);
-            // Wait for receiver to trigger download and close connection
             return;
           }
 
-          const slice = file.slice(offset, offset + CHUNK_SIZE);
-          fileReader.readAsArrayBuffer(slice);
+          if (dc.bufferedAmount > 262144) { // 256KB threshold
+            isPaused = true;
+            return;
+          }
+
+          const chunk = file.slice(offset, offset + CHUNK_SIZE);
+          fileReader.readAsArrayBuffer(chunk);
         };
 
-        fileReader.onload = (readEvent) => {
-          const buffer = readEvent.target?.result as ArrayBuffer;
-          if (dc.readyState === 'open') {
+        fileReader.onload = (e) => {
+          const buffer = e.target?.result as ArrayBuffer;
+          if (buffer) {
             dc.send(buffer);
             offset += buffer.byteLength;
             setFileTransfer(prev => prev ? { 
@@ -833,11 +1137,7 @@ export default function ChatPage() {
               bytesTransferred: offset
             } : null);
 
-            if (dc.bufferedAmount > 1048576) {
-              setTimeout(sendNextChunk, 40);
-            } else {
-              sendNextChunk();
-            }
+            sendNextChunk();
           }
         };
 
@@ -855,64 +1155,66 @@ export default function ChatPage() {
       };
 
       const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
+      const modifiedSdp = offer.sdp?.replace(/s=-\r\n/, 's=file\r\n') || offer.sdp;
+      const modifiedOffer = new RTCSessionDescription({
+        type: offer.type,
+        sdp: modifiedSdp
+      });
+      await pc.setLocalDescription(modifiedOffer);
 
       socketRef.current?.emit('webrtc-offer', {
-        senderConnectId: currentUser.connectId,
+        senderConnectId: myConnectId,
         recipientConnectId: activePeer.connectId,
-        offer
+        offer: modifiedOffer,
+        type: 'file'
       });
     } catch (err) {
-      console.error('P2P Drop-Zone setup failed:', err);
+      console.error('P2P File stream failed:', err);
       setFileTransfer(prev => prev ? { ...prev, status: 'failed' } : null);
       setTimeout(() => setFileTransfer(null), 3000);
       cleanupFileConnection();
     }
   };
 
-  // Copy details
-  const copyMyId = () => {
-    if (!currentUser) return;
-    navigator.clipboard.writeText(currentUser.connectId);
-    setCopiedId(true);
-    setTimeout(() => setCopiedId(false), 2000);
+  // iOS/Safari compatible hidden Audio mix player for P2P mesh
+  const playRemoteAudio = (peerId: string, stream: MediaStream) => {
+    let audioEl = document.getElementById(`audio-${peerId}`) as HTMLAudioElement;
+    if (!audioEl) {
+      audioEl = document.createElement('audio');
+      audioEl.id = `audio-${peerId}`;
+      audioEl.autoplay = true;
+      audioEl.style.display = 'none';
+      audioEl.setAttribute('playsinline', 'true');
+      document.body.appendChild(audioEl);
+    }
+    audioEl.srcObject = stream;
+    audioEl.play().catch(e => console.error('Audio playback error:', e));
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('connect_x_user');
-    router.push('/login');
+  const stopRemoteAudio = (peerId: string) => {
+    const audioEl = document.getElementById(`audio-${peerId}`);
+    if (audioEl) {
+      audioEl.remove();
+    }
   };
 
-  // Helper formatting size bytes
-  const formatBytes = (bytes: number): string => {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
-
-  // WebRTC Voice Call controls
-  const initiateCall = async () => {
-    if (!activePeer || !currentUser) return;
-    setCallState('calling');
-    setCallerDetails({ connectId: activePeer.connectId, username: activePeer.username });
+  // WebRTC Voice call E2E Mesh methods
+  const initiateVoiceCallToPeer = async (peerId: string, stream: MediaStream) => {
+    if (!currentUser || voicePcsRef.current.has(peerId)) return;
+    const myConnectId = currentUser.connectId;
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      localStreamRef.current = stream;
-
       const pc = new RTCPeerConnection(rtcConfig);
-      pcRef.current = pc;
-      voiceIceQueueRef.current = [];
+      voicePcsRef.current.set(peerId, pc);
+      voiceIceQueuesRef.current.set(peerId, []);
 
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
       pc.onicecandidate = (event) => {
         if (event.candidate) {
           socketRef.current?.emit('webrtc-ice-candidate', {
-            senderConnectId: currentUser.connectId,
-            recipientConnectId: activePeer.connectId,
+            senderConnectId: myConnectId,
+            recipientConnectId: peerId,
             candidate: {
               candidate: event.candidate.candidate,
               sdpMid: event.candidate.sdpMid,
@@ -925,11 +1227,7 @@ export default function ChatPage() {
 
       pc.ontrack = (event) => {
         if (event.streams && event.streams[0]) {
-          remoteStreamRef.current = event.streams[0];
-          if (audioRef.current) {
-            audioRef.current.srcObject = event.streams[0];
-            audioRef.current.play().catch(e => console.error(e));
-          }
+          playRemoteAudio(peerId, event.streams[0]);
         }
       };
 
@@ -937,12 +1235,94 @@ export default function ChatPage() {
       await pc.setLocalDescription(offer);
 
       socketRef.current?.emit('webrtc-offer', {
-        senderConnectId: currentUser.connectId,
-        recipientConnectId: activePeer.connectId,
-        offer
+        senderConnectId: myConnectId,
+        recipientConnectId: peerId,
+        offer,
+        type: 'voice'
       });
     } catch (err) {
-      console.error('Call initialization error:', err);
+      console.error(`Voice connection to ${peerId} failed:`, err);
+    }
+  };
+
+  const acceptVoiceCallFromPeer = async (peerId: string, offer: RTCSessionDescriptionInit, stream: MediaStream) => {
+    if (!currentUser) return;
+    const myConnectId = currentUser.connectId;
+
+    try {
+      const pc = new RTCPeerConnection(rtcConfig);
+      voicePcsRef.current.set(peerId, pc);
+      voiceIceQueuesRef.current.set(peerId, []);
+
+      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          socketRef.current?.emit('webrtc-ice-candidate', {
+            senderConnectId: myConnectId,
+            recipientConnectId: peerId,
+            candidate: {
+              candidate: event.candidate.candidate,
+              sdpMid: event.candidate.sdpMid,
+              sdpMLineIndex: event.candidate.sdpMLineIndex,
+              type: 'voice'
+            }
+          });
+        }
+      };
+
+      pc.ontrack = (event) => {
+        if (event.streams && event.streams[0]) {
+          playRemoteAudio(peerId, event.streams[0]);
+        }
+      };
+
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+
+      const queue = voiceIceQueuesRef.current.get(peerId) || [];
+      if (queue.length > 0) {
+        for (const cand of queue) {
+          await pc.addIceCandidate(cand).catch(e => console.error(e));
+        }
+        voiceIceQueuesRef.current.set(peerId, []);
+      }
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      socketRef.current?.emit('webrtc-answer', {
+        senderConnectId: myConnectId,
+        recipientConnectId: peerId,
+        answer,
+        type: 'voice'
+      });
+    } catch (err) {
+      console.error(`Accept voice call from ${peerId} failed:`, err);
+    }
+  };
+
+  const initiateCall = async () => {
+    if ((!activePeer && !activeGroup) || !currentUser) return;
+    setCallState(activeGroup ? 'connected' : 'calling');
+    setCallerDetails({
+      connectId: activePeer ? activePeer.connectId : activeGroup!,
+      username: activePeer ? activePeer.username : `Group: ${activeGroup}`
+    });
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      localStreamRef.current = stream;
+
+      if (activePeer) {
+        await initiateVoiceCallToPeer(activePeer.connectId, stream);
+      } else if (activeGroup) {
+        groupMembers.forEach((peerId) => {
+          initiateVoiceCallToPeer(peerId, stream);
+        });
+        startCallTimer();
+      }
+    } catch (err) {
+      console.error('Call initialization failed:', err);
       cleanupCall();
     }
   };
@@ -954,55 +1334,16 @@ export default function ChatPage() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       localStreamRef.current = stream;
 
-      const pc = new RTCPeerConnection(rtcConfig);
-      pcRef.current = pc;
-      voiceIceQueueRef.current = [];
-
-      stream.getTracks().forEach(track => pc.addTrack(track, stream));
-
-      pc.onicecandidate = (event) => {
-        if (event.candidate) {
-          socketRef.current?.emit('webrtc-ice-candidate', {
-            senderConnectId: currentUser.connectId,
-            recipientConnectId: callerDetails.connectId,
-            candidate: {
-              candidate: event.candidate.candidate,
-              sdpMid: event.candidate.sdpMid,
-              sdpMLineIndex: event.candidate.sdpMLineIndex,
-              type: 'voice'
-            }
-          });
-        }
-      };
-
-      pc.ontrack = (event) => {
-        if (event.streams && event.streams[0]) {
-          remoteStreamRef.current = event.streams[0];
-          if (audioRef.current) {
-            audioRef.current.srcObject = event.streams[0];
-            audioRef.current.play().catch(e => console.error(e));
-          }
-        }
-      };
-
       const offer = (window as any).incomingOffer;
-      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      await acceptVoiceCallFromPeer(callerDetails.connectId, offer, stream);
 
-      if (voiceIceQueueRef.current.length > 0) {
-        for (const cand of voiceIceQueueRef.current) {
-          await pc.addIceCandidate(cand).catch(e => console.error(e));
-        }
-        voiceIceQueueRef.current = [];
+      if (activeGroup) {
+        groupMembers.forEach((peerId) => {
+          if (peerId !== callerDetails.connectId) {
+            initiateVoiceCallToPeer(peerId, stream);
+          }
+        });
       }
-
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-
-      socketRef.current?.emit('webrtc-answer', {
-        senderConnectId: currentUser.connectId,
-        recipientConnectId: callerDetails.connectId,
-        answer
-      });
 
       setCallState('connected');
       startCallTimer();
@@ -1023,419 +1364,120 @@ export default function ChatPage() {
   };
 
   const endCall = () => {
-    if (callerDetails && currentUser) {
-      socketRef.current?.emit('call-terminated', {
-        senderConnectId: currentUser.connectId,
-        recipientConnectId: callerDetails.connectId
+    if (currentUser) {
+      voicePcsRef.current.forEach((pc, peerId) => {
+        socketRef.current?.emit('call-terminated', {
+          senderConnectId: currentUser.connectId,
+          recipientConnectId: peerId
+        });
       });
+      if (activePeer) {
+        socketRef.current?.emit('call-terminated', {
+          senderConnectId: currentUser.connectId,
+          recipientConnectId: activePeer.connectId
+        });
+      }
     }
     cleanupCall();
   };
 
+  const cleanupCall = () => {
+    if (callTimerRef.current) {
+      clearInterval(callTimerRef.current);
+      callTimerRef.current = null;
+    }
+    
+    voicePcsRef.current.forEach((pc, peerId) => {
+      pc.close();
+      stopRemoteAudio(peerId);
+    });
+    voicePcsRef.current.clear();
+    voiceIceQueuesRef.current.clear();
+
+    if (pcRef.current) {
+      pcRef.current.close();
+      pcRef.current = null;
+    }
+
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => track.stop());
+      localStreamRef.current = null;
+    }
+    remoteStreamRef.current = null;
+
+    setCallState('idle');
+    setCallerDetails(null);
+    setCallDuration(0);
+    setIsMuted(false);
+  };
+
+  const cleanupPeerVoice = (peerId: string) => {
+    const pc = voicePcsRef.current.get(peerId);
+    if (pc) {
+      pc.close();
+      voicePcsRef.current.delete(peerId);
+    }
+    stopRemoteAudio(peerId);
+    voiceIceQueuesRef.current.delete(peerId);
+    
+    if (voicePcsRef.current.size === 0 && !pcRef.current) {
+      setCallState('idle');
+      setCallerDetails(null);
+      setCallDuration(0);
+    }
+  };
+
   const toggleMute = () => {
     if (localStreamRef.current) {
-      const audioTracks = localStreamRef.current.getAudioTracks();
-      if (audioTracks[0]) {
-        audioTracks[0].enabled = !audioTracks[0].enabled;
-        setIsMuted(!audioTracks[0].enabled);
+      const audioTrack = localStreamRef.current.getAudioTracks()[0];
+      if (audioTrack) {
+        audioTrack.enabled = !audioTrack.enabled;
+        setIsMuted(!audioTrack.enabled);
       }
     }
   };
 
-  const startCallTimer = () => {
-    setCallDuration(0);
-    if (callTimerRef.current) clearInterval(callTimerRef.current);
-    callTimerRef.current = setInterval(() => {
-      setCallDuration(prev => prev + 1);
-    }, 1000);
-  };
-
-  const formatDuration = (secs: number) => {
+  const formatDuration = (secs: number): string => {
     const m = Math.floor(secs / 60).toString().padStart(2, '0');
     const s = (secs % 60).toString().padStart(2, '0');
     return `${m}:${s}`;
   };
 
-  const cleanupCall = () => {
-    setCallState('idle');
-    setCallerDetails(null);
-    setIsMuted(false);
-    setCallDuration(0);
-    if (callTimerRef.current) clearInterval(callTimerRef.current);
+  const formatBytes = (bytes: number): string => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
 
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach(t => t.stop());
-      localStreamRef.current = null;
-    }
-    if (pcRef.current) {
-      pcRef.current.close();
-      pcRef.current = null;
-    }
-    if (audioRef.current) {
-      audioRef.current.srcObject = null;
-    }
-    (window as any).incomingOffer = null;
+  const startCallTimer = () => {
+    if (callTimerRef.current) clearInterval(callTimerRef.current);
+    setCallDuration(0);
+    callTimerRef.current = setInterval(() => {
+      setCallDuration(prev => prev + 1);
+    }, 1000);
   };
 
   const cleanupFileConnection = () => {
-    if (filePcRef.current) {
-      filePcRef.current.close();
-      filePcRef.current = null;
-    }
     if (dataChannelRef.current) {
       dataChannelRef.current.close();
       dataChannelRef.current = null;
     }
+    if (filePcRef.current) {
+      filePcRef.current.close();
+      filePcRef.current = null;
+    }
+    fileIceQueueRef.current = [];
     receivedChunksRef.current = [];
     receivedSizeRef.current = 0;
     fileMetadataRef.current = null;
   };
 
-  // ==========================================
-  // WebRTC Sandbox Sketchpad Logic
-  // ==========================================
-
-  const initiateSandboxConnection = async () => {
-    if (!activePeer || !currentUser || sandboxActive) return;
-
-    try {
-      const pc = new RTCPeerConnection(rtcConfig);
-      sandboxPcRef.current = pc;
-      sandboxIceQueueRef.current = [];
-
-      const dc = pc.createDataChannel('sandbox', { ordered: true });
-      sandboxChannelRef.current = dc;
-
-      pc.onicecandidate = (event) => {
-        if (event.candidate) {
-          socketRef.current?.emit('webrtc-ice-candidate', {
-            senderConnectId: currentUser.connectId,
-            recipientConnectId: activePeer.connectId,
-            candidate: {
-              candidate: event.candidate.candidate,
-              sdpMid: event.candidate.sdpMid,
-              sdpMLineIndex: event.candidate.sdpMLineIndex,
-              type: 'sandbox'
-            }
-          });
-        }
-      };
-
-      dc.onopen = () => {
-        setSandboxActive(true);
-      };
-
-      dc.onmessage = (msgEvent) => {
-        try {
-          const data = JSON.parse(msgEvent.data);
-          if (data.type === 'SANDBOX_ACTION') {
-            handleSandboxMessage(data.action);
-          }
-        } catch (e) {
-          console.error('Failed to parse sandbox message:', e);
-        }
-      };
-
-      dc.onclose = () => {
-        cleanupSandboxConnection();
-      };
-
-      dc.onerror = () => {
-        cleanupSandboxConnection();
-      };
-
-      const offer = await pc.createOffer();
-      // Replace session name in SDP to flag it as drawing sandbox
-      const modifiedSdp = offer.sdp?.replace(/s=-\r\n/, 's=sandbox\r\n') || offer.sdp;
-      const modifiedOffer = new RTCSessionDescription({
-        type: offer.type,
-        sdp: modifiedSdp
-      });
-      await pc.setLocalDescription(modifiedOffer);
-
-      socketRef.current?.emit('webrtc-offer', {
-        senderConnectId: currentUser.connectId,
-        recipientConnectId: activePeer.connectId,
-        offer: modifiedOffer
-      });
-
-    } catch (err) {
-      console.error('Sandbox connection setup failed:', err);
-      cleanupSandboxConnection();
-    }
-  };
-
-  const handleIncomingSandboxOffer = async (offer: RTCSessionDescriptionInit, senderConnectId: string) => {
-    try {
-      const pc = new RTCPeerConnection(rtcConfig);
-      sandboxPcRef.current = pc;
-      sandboxIceQueueRef.current = [];
-
-      pc.onicecandidate = (event) => {
-        if (event.candidate && currentUserRef.current) {
-          socketRef.current?.emit('webrtc-ice-candidate', {
-            senderConnectId: currentUserRef.current.connectId,
-            recipientConnectId: senderConnectId,
-            candidate: {
-              candidate: event.candidate.candidate,
-              sdpMid: event.candidate.sdpMid,
-              sdpMLineIndex: event.candidate.sdpMLineIndex,
-              type: 'sandbox'
-            }
-          });
-        }
-      };
-
-      pc.ondatachannel = (event) => {
-        const dc = event.channel;
-        if (dc.label === 'sandbox') {
-          sandboxChannelRef.current = dc;
-          
-          dc.onopen = () => {
-            setSandboxActive(true);
-          };
-
-          dc.onmessage = (msgEvent) => {
-            try {
-              const data = JSON.parse(msgEvent.data);
-              if (data.type === 'SANDBOX_ACTION') {
-                handleSandboxMessage(data.action);
-              }
-            } catch (e) {
-              console.error('Failed to parse sandbox message:', e);
-            }
-          };
-
-          dc.onclose = () => {
-            cleanupSandboxConnection();
-          };
-
-          dc.onerror = () => {
-            cleanupSandboxConnection();
-          };
-        }
-      };
-
-      await pc.setRemoteDescription(new RTCSessionDescription(offer));
-      
-      if (sandboxIceQueueRef.current.length > 0) {
-        for (const cand of sandboxIceQueueRef.current) {
-          await pc.addIceCandidate(cand).catch(e => console.error(e));
-        }
-        sandboxIceQueueRef.current = [];
-      }
-
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-
-      if (currentUserRef.current) {
-        socketRef.current?.emit('webrtc-answer', {
-          senderConnectId: currentUserRef.current.connectId,
-          recipientConnectId: senderConnectId,
-          answer
-        });
-      }
-
-    } catch (err) {
-      console.error('Failed to handle incoming sandbox offer:', err);
-      cleanupSandboxConnection();
-    }
-  };
-
-  const sendSandboxAction = (action: any) => {
-    if (sandboxChannelRef.current && sandboxChannelRef.current.readyState === 'open') {
-      sandboxChannelRef.current.send(JSON.stringify({
-        type: 'SANDBOX_ACTION',
-        action
-      }));
-    }
-  };
-
-  const handleSandboxMessage = (msg: any) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    
-    const rect = canvas.getBoundingClientRect();
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const { type, x, y, color, size } = msg;
-
-    if (type === 'start' && x !== undefined && y !== undefined) {
-      const realX = x * rect.width;
-      const realY = y * rect.height;
-      peerLastX.current = realX;
-      peerLastY.current = realY;
-    } 
-    else if (type === 'draw' && x !== undefined && y !== undefined && color && size) {
-      const realX = x * rect.width;
-      const realY = y * rect.height;
-
-      ctx.beginPath();
-      ctx.strokeStyle = color;
-      ctx.lineWidth = size;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.moveTo(peerLastX.current, peerLastY.current);
-      ctx.lineTo(realX, realY);
-      ctx.stroke();
-
-      peerLastX.current = realX;
-      peerLastY.current = realY;
-    } 
-    else if (type === 'cursor' && x !== undefined && y !== undefined) {
-      const realX = x * rect.width;
-      const realY = y * rect.height;
-      setPeerDrawingCursor({ x: realX, y: realY });
-    }
-    else if (type === 'cursor-leave') {
-      setPeerDrawingCursor(null);
-    }
-    else if (type === 'clear') {
-      triggerSandboxWipeAnimation();
-    }
-  };
-
-  const triggerSandboxWipeAnimation = () => {
-    setSandboxGlitch(true);
-    setTimeout(() => {
-      const canvas = canvasRef.current;
-      if (canvas) {
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-        }
-      }
-      setSandboxGlitch(false);
-    }, 800);
-  };
-
-  const handlePurgeSandbox = () => {
-    triggerSandboxWipeAnimation();
-    sendSandboxAction({ type: 'clear' });
-  };
-
-  const cleanupSandboxConnection = () => {
-    setSandboxActive(false);
-    setPeerDrawingCursor(null);
-    if (sandboxPcRef.current) {
-      sandboxPcRef.current.close();
-      sandboxPcRef.current = null;
-    }
-    if (sandboxChannelRef.current) {
-      sandboxChannelRef.current.close();
-      sandboxChannelRef.current = null;
-    }
-    sandboxIceQueueRef.current = [];
-  };
-
-  // Canvas local drawing handlers
-  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
-    isDrawingRef.current = true;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const rect = canvas.getBoundingClientRect();
-    let clientX = 0;
-    let clientY = 0;
-    
-    if ('touches' in e) {
-      if (e.touches.length === 0) return;
-      clientX = e.touches[0].clientX;
-      clientY = e.touches[0].clientY;
-    } else {
-      clientX = e.clientX;
-      clientY = e.clientY;
-    }
-
-    const x = clientX - rect.left;
-    const y = clientY - rect.top;
-    
-    lastX.current = x;
-    lastY.current = y;
-
-    const xPct = x / rect.width;
-    const yPct = y / rect.height;
-
-    sendSandboxAction({
-      type: 'start',
-      x: xPct,
-      y: yPct,
-      color: brushColor,
-      size: brushSize
-    });
-  };
-
-  const draw = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const rect = canvas.getBoundingClientRect();
-    let clientX = 0;
-    let clientY = 0;
-    
-    if ('touches' in e) {
-      if (e.touches.length === 0) return;
-      clientX = e.touches[0].clientX;
-      clientY = e.touches[0].clientY;
-    } else {
-      clientX = e.clientX;
-      clientY = e.clientY;
-    }
-
-    const x = clientX - rect.left;
-    const y = clientY - rect.top;
-    
-    const xPct = x / rect.width;
-    const yPct = y / rect.height;
-
-    // Send cursor movements
-    sendSandboxAction({
-      type: 'cursor',
-      x: xPct,
-      y: yPct
-    });
-
-    if (!isDrawingRef.current) return;
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    ctx.beginPath();
-    ctx.strokeStyle = brushColor;
-    ctx.lineWidth = brushSize;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.moveTo(lastX.current, lastY.current);
-    ctx.lineTo(x, y);
-    ctx.stroke();
-
-    lastX.current = x;
-    lastY.current = y;
-
-    sendSandboxAction({
-      type: 'draw',
-      x: xPct,
-      y: yPct,
-      color: brushColor,
-      size: brushSize
-    });
-  };
-
-  const stopDrawing = () => {
-    isDrawingRef.current = false;
-  };
-
-  const handleMouseLeave = () => {
-    isDrawingRef.current = false;
-    sendSandboxAction({ type: 'cursor-leave' });
-  };
-
   return (
     <div className={`relative min-h-screen flex flex-col h-screen overflow-hidden bg-zinc-950 text-zinc-100 p-4 sm:p-6 gap-4 sm:gap-6 ${glitchActive ? 'animate-glitch' : ''}`}>
-      <audio ref={audioRef} autoPlay className="hidden" />
+      <audio ref={audioRef} autoPlay playsInline className="hidden" />
       
-      {/* Dynamic drifting ambient background */}
       <ParticleBackground />
 
       {/* GLITCH SHUTTER SCREEN PURGE LAYER */}
@@ -1467,7 +1509,12 @@ export default function ChatPage() {
         {currentUser && (
           <div className="flex items-center gap-4">
             <button
-              onClick={copyMyId}
+              onClick={() => {
+                if (!currentUser) return;
+                navigator.clipboard.writeText(currentUser.connectId);
+                setCopiedId(true);
+                setTimeout(() => setCopiedId(false), 2000);
+              }}
               className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-white/5 bg-white/2 hover:bg-white/5 text-zinc-300 text-xs font-semibold select-none cursor-pointer transition-all duration-200"
               title="Click to Copy Connect ID"
             >
@@ -1480,7 +1527,10 @@ export default function ChatPage() {
             </button>
 
             <button
-              onClick={handleLogout}
+              onClick={() => {
+                localStorage.removeItem('connect_x_user');
+                router.push('/login');
+              }}
               className="p-2 rounded-lg border border-red-500/20 bg-red-500/5 hover:bg-red-500/10 text-red-400 transition-all duration-200"
               title="Logout"
             >
@@ -1517,13 +1567,71 @@ export default function ChatPage() {
                   </div>
                 </div>
 
-                {activePeer && (
+                {(activePeer || activeGroup) && (
                   <button
                     onClick={handleBurnProtocolSever}
                     className="w-full py-2.5 px-4 rounded-xl border border-red-500/20 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-black uppercase tracking-widest transition-all duration-200 hover:shadow-[0_0_15px_rgba(239,68,68,0.25)] cursor-pointer"
                   >
                     💥 Sever Link & WIPE
                   </button>
+                )}
+              </div>
+
+              {/* SECURED GROUPS MATCHMAKER */}
+              <div className="glass-panel rounded-2xl p-4 sm:p-5 flex flex-col gap-3.5 antigravity-2">
+                <h2 className="text-xs uppercase tracking-widest font-black text-blue-400 flex items-center gap-1.5">
+                  <Users className="w-4 h-4 text-blue-500" /> Secured Group Rooms
+                </h2>
+                
+                <form onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!groupIdInput.trim() || !currentUser) return;
+                  socketRef.current?.emit('join-group', {
+                    connectId: currentUser.connectId,
+                    groupId: groupIdInput.trim().toUpperCase(),
+                    username: currentUser.username
+                  });
+                  setGroupIdInput('');
+                }} className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Group Code (e.g. ALPHA)"
+                    maxLength={12}
+                    value={groupIdInput}
+                    onChange={(e) => setGroupIdInput(e.target.value.toUpperCase())}
+                    className="flex-grow bg-white/5 border border-white/10 rounded-xl py-2 px-3 text-xs font-mono tracking-widest text-white placeholder-zinc-655 focus:outline-none focus:border-blue-500/40 transition-all duration-200"
+                  />
+                  <button
+                    type="submit"
+                    className="bg-blue-600 hover:bg-blue-500 text-white rounded-xl px-4 flex items-center justify-center transition-all duration-200 active:scale-95 cursor-pointer text-xs font-bold"
+                  >
+                    Join
+                  </button>
+                </form>
+
+                {groups.length > 0 && (
+                  <div className="flex flex-col gap-1.5 max-h-32 overflow-y-auto pr-1">
+                    {groups.map((g) => {
+                      const isActive = activeGroup === g;
+                      return (
+                        <button
+                          key={g}
+                          onClick={() => {
+                            setActiveGroup(g);
+                            setActivePeer(null);
+                          }}
+                          className={`w-full text-left py-2 px-3 rounded-lg border text-xs flex items-center justify-between font-mono tracking-widest transition-all duration-200 ${
+                            isActive 
+                              ? 'bg-blue-500/10 border-blue-500/30 text-blue-400' 
+                              : 'bg-white/2 border-white/5 hover:bg-white/4 text-zinc-300'
+                          }`}
+                        >
+                          <span>Room: {g}</span>
+                          <span className="text-[10px] text-zinc-555">Active</span>
+                        </button>
+                      );
+                    })}
+                  </div>
                 )}
               </div>
 
@@ -1619,7 +1727,7 @@ export default function ChatPage() {
                           key={peer.connectId}
                           onClick={() => {
                             setActivePeer(peer);
-                            cleanupSandboxConnection();
+                            setActiveGroup(null);
                           }}
                           className={`w-full text-left p-3 rounded-xl border flex items-center justify-between gap-3 transition-all duration-200 ${
                             isActive 
@@ -1653,7 +1761,7 @@ export default function ChatPage() {
 
             {/* Right Side: Chat Session Panel */}
             <main className="flex-grow glass-panel rounded-2xl flex flex-col overflow-hidden h-full relative antigravity-3">
-              {activePeer ? (
+              {(activePeer || activeGroup) ? (
                 <div 
                   className={`flex-grow flex flex-col h-full overflow-hidden relative ${
                     dragOverZone ? 'border-2 border-dashed border-blue-500/40 bg-blue-500/5' : ''
@@ -1676,51 +1784,53 @@ export default function ChatPage() {
                   <div className="p-4 sm:p-5 border-b border-white/10 flex items-center justify-between shrink-0 bg-white/1">
                     <div className="truncate flex items-center gap-3">
                       <div className="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 font-bold text-sm shrink-0">
-                        {activePeer.username?.charAt(0).toUpperCase() || 'P'}
+                        {activePeer ? (activePeer.username?.charAt(0).toUpperCase() || 'P') : 'G'}
                       </div>
                       <div className="truncate">
                         <h2 className="font-bold text-sm text-zinc-100 flex items-center gap-2 leading-none">
-                          {activePeer.username}
-                          <span className={`w-1.5 h-1.5 rounded-full ${
-                            activePeer.status === 'online' ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-600'
-                          }`} />
+                          {activePeer ? activePeer.username : `Group: ${activeGroup}`}
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                         </h2>
                         <span className="font-mono text-[10px] text-zinc-500 tracking-widest mt-1 block">
-                          Connect ID: {activePeer.connectId}
+                          {activePeer ? `Connect ID: ${activePeer.connectId}` : `Members online: ${groupMembers.length + 1}`}
                         </span>
                       </div>
                     </div>
 
                     <div className="flex items-center gap-2">
-                      {/* P2P File streaming button */}
-                      <input
-                        type="file"
-                        ref={fileInputRef}
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) streamFileP2P(file);
-                        }}
-                        className="hidden"
-                      />
-                      <button
-                        onClick={() => fileInputRef.current?.click()}
-                        disabled={fileTransfer !== null}
-                        className="p-2.5 rounded-xl border border-white/5 bg-white/2 hover:bg-white/5 text-zinc-400 hover:text-white transition-all duration-200 flex items-center gap-2 text-xs font-semibold cursor-pointer disabled:opacity-50"
-                        title="Send File direct P2P"
-                      >
-                        <FolderUp className="w-4 h-4 text-blue-400" />
-                        <span className="hidden sm:inline">Stream File</span>
-                      </button>
+                      {/* P2P File streaming button (hidden for groups to preserve upload bandwidth) */}
+                      {activePeer && (
+                        <>
+                          <input
+                            type="file"
+                            ref={fileInputRef}
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) streamFileP2P(file);
+                            }}
+                            className="hidden"
+                          />
+                          <button
+                            onClick={() => fileInputRef.current?.click()}
+                            disabled={fileTransfer !== null}
+                            className="p-2.5 rounded-xl border border-white/5 bg-white/2 hover:bg-white/5 text-zinc-400 hover:text-white transition-all duration-200 flex items-center gap-2 text-xs font-semibold cursor-pointer disabled:opacity-50"
+                            title="Send File direct P2P"
+                          >
+                            <FolderUp className="w-4 h-4 text-blue-400" />
+                            <span className="hidden sm:inline">Stream File</span>
+                          </button>
+                        </>
+                      )}
 
                       {/* WebRTC Voice call button */}
                       <button
                         onClick={initiateCall}
                         disabled={callState !== 'idle'}
                         className="p-2.5 rounded-xl border border-white/5 bg-white/2 hover:bg-white/5 text-zinc-400 hover:text-white transition-all duration-200 flex items-center gap-2 text-xs font-semibold cursor-pointer disabled:opacity-50"
-                        title="Start direct Voice Call"
+                        title={activePeer ? "Start direct Voice Call" : "Start Group Call Mesh"}
                       >
                         <Phone className="w-4 h-4 text-emerald-400" />
-                        <span className="hidden sm:inline">Voice Call</span>
+                        <span className="hidden sm:inline">{activePeer ? "Voice Call" : "Group Call"}</span>
                       </button>
                     </div>
                   </div>
@@ -1764,13 +1874,13 @@ export default function ChatPage() {
                       )}
                     </div>
 
-                    {(messages[activePeer.connectId] || []).length === 0 ? (
+                    {((activePeer ? messages[activePeer.connectId] : messages[activeGroup!]) || []).length === 0 ? (
                       <div className="flex flex-col items-center justify-center py-20 text-center text-zinc-600 gap-2">
                         <MessageSquare className="w-10 h-10 text-zinc-800" />
                         <p className="text-2xs uppercase tracking-wider">Secure channel open. Start typing below.</p>
                       </div>
                     ) : (
-                      (messages[activePeer.connectId] || []).map((msg, index) => {
+                      ((activePeer ? messages[activePeer.connectId] : messages[activeGroup!]) || []).map((msg, index) => {
                         const isMe = msg.senderConnectId === currentUser?.connectId;
                         const date = new Date(msg.timestamp);
                         const timeString = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -1792,19 +1902,19 @@ export default function ChatPage() {
                                 isMe 
                                   ? 'bg-blue-600 text-white rounded-tr-none shadow-[0_2px_8px_rgba(59,130,246,0.2)]' 
                                   : 'bg-white/5 border border-white/10 text-zinc-100 rounded-tl-none'
-                              } ${!isHeld && !isMe ? 'filter blur-[3px] font-mono tracking-widest text-zinc-500/80 bg-white/2' : ''}`}
+                              } ${!isHeld ? 'filter blur-[3px] font-mono tracking-widest text-zinc-350/80 bg-white/2' : ''}`}
                             >
-                              {isMe ? msg.text : (isHeld ? msg.text : msg.scrambledText)}
+                              {isHeld ? msg.text : msg.scrambledText}
 
-                              {!isHeld && !isMe && (
+                              {!isHeld && (
                                 <div className="absolute inset-0 flex items-center justify-center bg-black/10 rounded-2xl opacity-0 hover:opacity-100 transition-opacity duration-200">
                                   <EyeOff className="w-4 h-4 text-zinc-400" />
                                 </div>
                               )}
                             </div>
                             
-                            <span className="text-[9px] text-zinc-600 font-medium mt-1 uppercase tracking-wider block">
-                              {timeString}
+                            <span className="text-[9px] text-zinc-650 font-medium mt-1 uppercase tracking-wider block">
+                              {msg.senderConnectId !== currentUser?.connectId ? `${msg.senderConnectId} • ` : ''}{timeString}
                             </span>
                           </div>
                         );
@@ -1841,27 +1951,31 @@ export default function ChatPage() {
                   {/* Message Composer */}
                   <div className="p-4 sm:p-5 border-t border-white/10 shrink-0 bg-white/1">
                     <form onSubmit={(e) => { e.preventDefault(); handleSendMessage(messageText); }} className="flex gap-2">
-                      <input
-                        type="file"
-                        ref={fileInputRef}
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) streamFileP2P(file);
-                        }}
-                        className="hidden"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        disabled={fileTransfer !== null}
-                        className="p-3 bg-white/5 border border-white/10 hover:bg-white/10 hover:border-zinc-500 hover:text-white text-zinc-400 rounded-xl flex items-center justify-center transition-all duration-200 cursor-pointer active:scale-95 disabled:opacity-50"
-                        title="Share File (Direct P2P)"
-                      >
-                        <UploadCloud className="w-4 h-4 text-blue-400" />
-                      </button>
+                      {activePeer && (
+                        <>
+                          <input
+                            type="file"
+                            ref={fileInputRef}
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) streamFileP2P(file);
+                            }}
+                            className="hidden"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => fileInputRef.current?.click()}
+                            disabled={fileTransfer !== null}
+                            className="p-3 bg-white/5 border border-white/10 hover:bg-white/10 hover:border-zinc-500 hover:text-white text-zinc-400 rounded-xl flex items-center justify-center transition-all duration-200 cursor-pointer active:scale-95 disabled:opacity-50"
+                            title="Share File (Direct P2P)"
+                          >
+                            <UploadCloud className="w-4 h-4 text-blue-400" />
+                          </button>
+                        </>
+                      )}
                       <input
                         type="text"
-                        placeholder={`Write encrypted message to ${activePeer.username}...`}
+                        placeholder={activePeer ? `Write encrypted message to ${activePeer.username}...` : `Write encrypted message to Group ${activeGroup}...`}
                         value={messageText}
                         onChange={(e) => setMessageText(e.target.value)}
                         className="flex-grow bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-blue-500/40 transition-all duration-200"

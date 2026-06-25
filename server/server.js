@@ -262,18 +262,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Real-time Chat message forwarding
-  socket.on('send-message', ({ senderConnectId, recipientConnectId, text }) => {
-    const recipientUpper = recipientConnectId.toUpperCase();
-    const recipientSocketId = activeSockets.get(recipientUpper);
-    if (recipientSocketId) {
-      io.to(recipientSocketId).emit('receive-message', {
-        senderConnectId: senderConnectId.toUpperCase(),
-        text,
-        timestamp: new Date().toISOString()
-      });
-    }
-  });
+
 
   // WebRTC Signaling: Offer forwarding
   socket.on('webrtc-offer', ({ senderConnectId, recipientConnectId, offer }) => {
@@ -322,11 +311,85 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Ephemeral Group Matchmaking
+  socket.on('join-group', ({ connectId, groupId, username }) => {
+    if (!connectId || !groupId) return;
+    const upperGroup = groupId.toUpperCase();
+    const upperConnect = connectId.toUpperCase();
+    
+    socket.join(`group:${upperGroup}`);
+    socket.groupId = upperGroup;
+
+    // Track active members in-memory
+    if (!global.groupMembers) {
+      global.groupMembers = new Map();
+    }
+    if (!global.groupMembers.has(upperGroup)) {
+      global.groupMembers.set(upperGroup, new Set());
+    }
+    const members = global.groupMembers.get(upperGroup);
+
+    // Broadcast join to other members
+    socket.to(`group:${upperGroup}`).emit('group-member-joined', {
+      connectId: upperConnect,
+      username
+    });
+
+    members.add(upperConnect);
+
+    // Send the list of current members (excluding self) to the joining user
+    const memberList = Array.from(members).filter(id => id !== upperConnect);
+    socket.emit('group-joined', {
+      groupId: upperGroup,
+      members: memberList
+    });
+    
+    console.log(`User ${upperConnect} joined group ${upperGroup}. Members:`, members);
+  });
+
+  socket.on('leave-group', ({ connectId, groupId }) => {
+    if (!connectId || !groupId) return;
+    const upperGroup = groupId.toUpperCase();
+    const upperConnect = connectId.toUpperCase();
+
+    socket.leave(`group:${upperGroup}`);
+    
+    if (global.groupMembers) {
+      const members = global.groupMembers.get(upperGroup);
+      if (members) {
+        members.delete(upperConnect);
+        if (members.size === 0) {
+          global.groupMembers.delete(upperGroup);
+        } else {
+          io.to(`group:${upperGroup}`).emit('group-member-left', {
+            connectId: upperConnect
+          });
+        }
+      }
+    }
+    console.log(`User ${upperConnect} left group ${upperGroup}`);
+  });
+
   socket.on('disconnect', () => {
     console.log(`Socket disconnected: ${socket.id}`);
     if (socket.connectId) {
       activeSockets.delete(socket.connectId);
       io.emit('peer-status', { connectId: socket.connectId, status: 'offline' });
+      
+      // If user was in a group, remove them from memory tracking
+      if (socket.groupId && global.groupMembers) {
+        const members = global.groupMembers.get(socket.groupId);
+        if (members) {
+          members.delete(socket.connectId);
+          if (members.size === 0) {
+            global.groupMembers.delete(socket.groupId);
+          } else {
+            io.to(`group:${socket.groupId}`).emit('group-member-left', {
+              connectId: socket.connectId
+            });
+          }
+        }
+      }
     }
   });
 });
