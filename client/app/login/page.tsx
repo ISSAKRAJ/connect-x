@@ -87,7 +87,11 @@ export default function LoginPage() {
       // Save user profile immediately to localStorage
       localStorage.setItem('connect_x_user', JSON.stringify(data));
     } catch (err: any) {
-      setError(err.message || 'An error occurred during registration.');
+      if (err.message === 'Failed to fetch') {
+        setError(`Failed to connect to backend at ${BACKEND_URL}. Check your server status.`);
+      } else {
+        setError(err.message || 'An error occurred during registration.');
+      }
     } finally {
       setLoading(false);
     }
@@ -123,7 +127,11 @@ export default function LoginPage() {
       // Redirect to chat room
       router.push('/chat');
     } catch (err: any) {
-      setError(err.message || 'Authentication failed. Please verify your Connect ID.');
+      if (err.message === 'Failed to fetch') {
+        setError(`Failed to connect to backend at ${BACKEND_URL}. Check your server status.`);
+      } else {
+        setError(err.message || 'Authentication failed. Please verify your Connect ID.');
+      }
     } finally {
       setLoading(false);
     }
