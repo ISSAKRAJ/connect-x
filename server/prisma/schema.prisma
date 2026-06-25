@@ -1,0 +1,25 @@
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id        String   @id @default(uuid())
+  username  String
+  connectId String   @unique
+  createdAt DateTime @default(now())
+}
+
+model Connection {
+  id             String   @id @default(uuid())
+  userAId        String
+  userBId        String
+  userAConnectId String
+  userBConnectId String
+  status         String   @default("PENDING") // PENDING, ACCEPTED
+  createdAt      DateTime @default(now())
+}
