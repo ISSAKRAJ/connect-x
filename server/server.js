@@ -265,25 +265,27 @@ io.on('connection', (socket) => {
 
 
   // WebRTC Signaling: Offer forwarding
-  socket.on('webrtc-offer', ({ senderConnectId, recipientConnectId, offer }) => {
+  socket.on('webrtc-offer', ({ senderConnectId, recipientConnectId, offer, type }) => {
     const recipientUpper = recipientConnectId.toUpperCase();
     const recipientSocketId = activeSockets.get(recipientUpper);
     if (recipientSocketId) {
       io.to(recipientSocketId).emit('webrtc-offer', {
         senderConnectId: senderConnectId.toUpperCase(),
-        offer
+        offer,
+        type
       });
     }
   });
 
   // WebRTC Signaling: Answer forwarding
-  socket.on('webrtc-answer', ({ senderConnectId, recipientConnectId, answer }) => {
+  socket.on('webrtc-answer', ({ senderConnectId, recipientConnectId, answer, type }) => {
     const recipientUpper = recipientConnectId.toUpperCase();
     const recipientSocketId = activeSockets.get(recipientUpper);
     if (recipientSocketId) {
       io.to(recipientSocketId).emit('webrtc-answer', {
         senderConnectId: senderConnectId.toUpperCase(),
-        answer
+        answer,
+        type
       });
     }
   });
