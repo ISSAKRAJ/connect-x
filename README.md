@@ -1,4 +1,4 @@
-# Connect X
+# Connect X 
 
 > **Zero-Gravity, Zero-Trust Peer-to-Peer Secure Chat, Voice Calling, and File Streaming Platform.**
 
