@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Key, User, PlusCircle, ArrowRight, Copy, Check, Info } from 'lucide-react';
+import { Key, User, PlusCircle, ArrowRight, Copy, Check, Info, LogOut } from 'lucide-react';
 
 const getBackendUrl = () => {
   if (typeof window === 'undefined') return 'http://localhost:5000';
@@ -28,18 +28,25 @@ export default function LoginPage() {
   const [generatedUser, setGeneratedUser] = useState<{ username: string; connectId: string } | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // Redirect to chat if already authenticated
+  const [existingUser, setExistingUser] = useState<{ username: string; connectId: string } | null>(null);
+
+  // Check if already authenticated on mount
   useEffect(() => {
     const savedUser = localStorage.getItem('connect_x_user');
     if (savedUser) {
       try {
-        JSON.parse(savedUser);
-        router.push('/chat');
+        const parsed = JSON.parse(savedUser);
+        setExistingUser(parsed);
       } catch (e) {
         localStorage.removeItem('connect_x_user');
       }
     }
-  }, [router]);
+  }, []);
+
+  const handleClearSession = () => {
+    localStorage.removeItem('connect_x_user');
+    setExistingUser(null);
+  };
 
   // Clear errors when switching tabs
   useEffect(() => {
@@ -152,8 +159,42 @@ export default function LoginPage() {
 
       {/* Main Glassmorphism Card with Floating Animation */}
       <div className="w-full max-w-md glass-panel-neon-blue rounded-2xl p-6 sm:p-8 antigravity-1 z-10">
+        
+        {/* Already Logged In Session Switcher */}
+        {existingUser && (
+          <div className="space-y-6 text-center animate-fade-in">
+            <div className="space-y-2">
+              <div className="w-12 h-12 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mx-auto text-blue-400">
+                <User className="w-6 h-6" />
+              </div>
+              <h3 className="text-lg font-bold text-white">Active Session Detected</h3>
+              <p className="text-zinc-500 text-xs">
+                You are currently signed in as <span className="text-blue-400 font-semibold">{existingUser.username}</span> (`{existingUser.connectId}`).
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-3">
+              <button
+                onClick={() => router.push('/chat')}
+                className="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-xl py-3.5 text-sm flex items-center justify-center gap-2 shadow-[0_4px_12px_rgba(59,130,246,0.3)] transition-all duration-200"
+              >
+                Go to Chat Console
+                <ArrowRight className="w-4 h-4" />
+              </button>
+
+              <button
+                onClick={handleClearSession}
+                className="w-full border border-white/10 hover:border-white/20 hover:bg-white/5 text-zinc-400 hover:text-white font-semibold rounded-xl py-3.5 text-sm flex items-center justify-center gap-2 transition-all duration-200"
+              >
+                <LogOut className="w-4 h-4" />
+                Sign Out & Create New ID
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Tab Headers */}
-        {!generatedUser && (
+        {!existingUser && !generatedUser && (
           <div className="flex border-b border-white/10 mb-6 pb-1">
             <button
               onClick={() => setActiveTab('login')}
@@ -189,7 +230,7 @@ export default function LoginPage() {
         )}
 
         {/* Tab 1: Enter Network (Login) */}
-        {!generatedUser && activeTab === 'login' && (
+        {!existingUser && !generatedUser && activeTab === 'login' && (
           <form onSubmit={handleLogin} className="space-y-4">
             <div className="space-y-2">
               <label htmlFor="connectId" className="text-zinc-400 text-xs uppercase tracking-widest font-semibold block">
@@ -221,7 +262,7 @@ export default function LoginPage() {
         )}
 
         {/* Tab 2: Generate Identity (Register) */}
-        {!generatedUser && activeTab === 'register' && (
+        {!existingUser && !generatedUser && activeTab === 'register' && (
           <form onSubmit={handleRegister} className="space-y-4">
             <div className="space-y-2">
               <label htmlFor="username" className="text-zinc-400 text-xs uppercase tracking-widest font-semibold block">
@@ -253,7 +294,7 @@ export default function LoginPage() {
         )}
 
         {/* Identity Confirmation view (Shown after Registering) */}
-        {generatedUser && (
+        {!existingUser && generatedUser && (
           <div className="space-y-6 text-center animate-fade-in">
             <div className="space-y-2">
               <div className="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center mx-auto text-emerald-400">
