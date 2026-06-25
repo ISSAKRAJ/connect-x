@@ -105,8 +105,7 @@ export default function ChatPage() {
     bytesTransferred: number;
   } | null>(null);
 
-  // Active Workspace Tab: 'chat' or 'sandbox'
-  const [workspaceTab, setWorkspaceTab] = useState<'chat' | 'sandbox'>('chat');
+
 
   // Drawing Sandbox states
   const [sandboxActive, setSandboxActive] = useState(false);
@@ -602,31 +601,7 @@ export default function ChatPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, activePeer]);
 
-  // Dynamic canvas sizing to match CSS dimensions perfectly (accounting for retina displays)
-  useEffect(() => {
-    if (workspaceTab === 'sandbox') {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      
-      const rect = canvas.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
-      
-      canvas.width = rect.width * dpr;
-      canvas.height = rect.height * dpr;
-      
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.scale(dpr, dpr);
-      }
-    }
-  }, [workspaceTab]);
 
-  // Trigger P2P drawing connection when moving to the sandbox tab
-  useEffect(() => {
-    if (workspaceTab === 'sandbox' && activePeer && currentUser && !sandboxActive) {
-      initiateSandboxConnection();
-    }
-  }, [workspaceTab, activePeer, currentUser]);
 
   // Load database connections
   const fetchConnections = async () => {
@@ -724,7 +699,6 @@ export default function ChatPage() {
       setMessages({});
       setActivePeer(null);
       setGlitchActive(false);
-      setWorkspaceTab('chat');
       setSidebarSuccess('Memory core purged. Session completely wiped.');
       setTimeout(() => setSidebarSuccess(''), 4000);
     }, 1500);
@@ -1638,8 +1612,6 @@ export default function ChatPage() {
                           key={peer.connectId}
                           onClick={() => {
                             setActivePeer(peer);
-                            // Auto reset tab to chat when switching peers
-                            setWorkspaceTab('chat');
                             cleanupSandboxConnection();
                           }}
                           className={`w-full text-left p-3 rounded-xl border flex items-center justify-between gap-3 transition-all duration-200 ${
@@ -1746,31 +1718,6 @@ export default function ChatPage() {
                     </div>
                   </div>
 
-                  {/* WORKSPACE TAB BAR */}
-                  <div className="flex border-b border-white/5 bg-white/1 px-4 sm:px-5 py-2 gap-2 shrink-0">
-                    <button
-                      onClick={() => setWorkspaceTab('chat')}
-                      className={`px-3 py-1.5 text-2xs font-black uppercase tracking-wider rounded-lg border transition-all duration-200 cursor-pointer ${
-                        workspaceTab === 'chat'
-                          ? 'bg-blue-500/10 border-blue-500/20 text-blue-400 shadow-[0_0_8px_rgba(59,130,246,0.1)]'
-                          : 'bg-transparent border-transparent text-zinc-500 hover:text-zinc-300'
-                      }`}
-                    >
-                      💬 Secure Message Tube
-                    </button>
-                    <button
-                      onClick={() => setWorkspaceTab('sandbox')}
-                      className={`px-3 py-1.5 text-2xs font-black uppercase tracking-wider rounded-lg border transition-all duration-200 flex items-center gap-1.5 cursor-pointer ${
-                        workspaceTab === 'sandbox'
-                          ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400 shadow-[0_0_8px_rgba(16,185,129,0.1)]'
-                          : 'bg-transparent border-transparent text-zinc-500 hover:text-zinc-300'
-                      }`}
-                    >
-                      🎨 P2P Creative Sandbox
-                      {sandboxActive && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />}
-                    </button>
-                  </div>
-
                   {/* File Transfer streaming loader */}
                   {fileTransfer && (
                     <div className="p-3 bg-blue-500/5 border-b border-blue-500/10 flex items-center justify-between text-xs gap-4 shrink-0">
@@ -1797,223 +1744,129 @@ export default function ChatPage() {
                     </div>
                   )}
 
-                  {workspaceTab === 'chat' ? (
-                    /* ==========================================
-                        TAB 1: ENCRYPTED MESSAGE TUBES
-                       ========================================== */
-                    <>
-                      <div className="flex-grow overflow-y-auto p-4 sm:p-5 space-y-4">
-                        <div className="flex items-center justify-center flex-col gap-1.5">
-                          <span className="text-[10px] font-bold text-zinc-600 bg-white/1 border border-white/5 rounded-full px-3 py-1 uppercase tracking-widest flex items-center gap-1.5">
-                            <Lock className="w-3 h-3 text-blue-500" /> E2E direct P2P link verified
-                          </span>
-                          {burnModeActive && (
-                            <span className="text-[9px] font-bold text-red-400 bg-red-500/5 border border-red-500/10 rounded-full px-2 py-0.5 uppercase tracking-widest">
-                              ⚡ Volatile Mode: Messages exist strictly in local RAM
-                            </span>
-                          )}
-                        </div>
-
-                        {(messages[activePeer.connectId] || []).length === 0 ? (
-                          <div className="flex flex-col items-center justify-center py-20 text-center text-zinc-600 gap-2">
-                            <MessageSquare className="w-10 h-10 text-zinc-800" />
-                            <p className="text-2xs uppercase tracking-wider">Secure channel open. Start typing below.</p>
-                          </div>
-                        ) : (
-                          (messages[activePeer.connectId] || []).map((msg, index) => {
-                            const isMe = msg.senderConnectId === currentUser?.connectId;
-                            const date = new Date(msg.timestamp);
-                            const timeString = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                            const isHeld = heldBubbleIndex === index;
-
-                            return (
-                              <div
-                                key={index}
-                                className={`flex flex-col max-w-[75%] ${isMe ? 'ml-auto items-end' : 'mr-auto items-start'}`}
-                              >
-                                {/* ANTI-SNOOP BLUR INTERACTIVE MESSAGE BUBBLE */}
-                                <div
-                                  onMouseDown={() => setHeldBubbleIndex(index)}
-                                  onMouseUp={() => setHeldBubbleIndex(null)}
-                                  onMouseLeave={() => setHeldBubbleIndex(null)}
-                                  onTouchStart={() => setHeldBubbleIndex(index)}
-                                  onTouchEnd={() => setHeldBubbleIndex(null)}
-                                  className={`p-3 rounded-2xl text-xs leading-relaxed transition-all duration-300 relative select-none cursor-pointer ${
-                                    isMe 
-                                      ? 'bg-blue-600 text-white rounded-tr-none shadow-[0_2px_8px_rgba(59,130,246,0.2)]' 
-                                      : 'bg-white/5 border border-white/10 text-zinc-100 rounded-tl-none'
-                                  } ${!isHeld && !isMe ? 'filter blur-[3px] font-mono tracking-widest text-zinc-500/80 bg-white/2' : ''}`}
-                                >
-                                  {isMe ? msg.text : (isHeld ? msg.text : msg.scrambledText)}
-
-                                  {!isHeld && !isMe && (
-                                    <div className="absolute inset-0 flex items-center justify-center bg-black/10 rounded-2xl opacity-0 hover:opacity-100 transition-opacity duration-200">
-                                      <EyeOff className="w-4 h-4 text-zinc-400" />
-                                    </div>
-                                  )}
-                                </div>
-                                
-                                <span className="text-[9px] text-zinc-600 font-medium mt-1 uppercase tracking-wider block">
-                                  {timeString}
-                                </span>
-                              </div>
-                            );
-                          })
-                        )}
-                        <div ref={messagesEndRef} />
-                      </div>
-
-                      {/* Contextual Smart Replies Panel */}
-                      {smartReplies.length > 0 && (
-                        <div className="px-4 sm:px-5 py-2 flex flex-wrap items-center gap-2 border-t border-white/5 bg-black/20 shrink-0">
-                          <div className="flex items-center gap-1.5 text-[9px] text-blue-400 font-bold uppercase tracking-widest select-none mr-2 shrink-0">
-                            <Cpu className="w-3.5 h-3.5 animate-spin" style={{ animationDuration: '4s' }} />
-                            <span>AI replies:</span>
-                          </div>
-                          {smartReplies.map((reply, i) => (
-                            <button
-                              key={i}
-                              onClick={() => handleSendMessage(reply)}
-                              className="px-3 py-1.5 rounded-full border border-white/5 bg-white/2 hover:bg-white/5 hover:border-blue-500/30 text-zinc-300 hover:text-white text-[10px] font-semibold transition-all duration-200 cursor-pointer active:scale-95 animate-hero-title"
-                              style={{ animationDelay: `${i * 150}ms` }}
-                            >
-                              {reply}
-                            </button>
-                          ))}
-                          {lastAnalyzedSentiment && (
-                            <span className="font-mono text-[9px] text-zinc-500 ml-auto select-none uppercase tracking-wider">
-                              {lastAnalyzedSentiment}
-                            </span>
-                          )}
-                        </div>
+                  {/* ENCRYPTED MESSAGE TUBES */}
+                  <div className="flex-grow overflow-y-auto p-4 sm:p-5 space-y-4">
+                    <div className="flex items-center justify-center flex-col gap-1.5">
+                      <span className="text-[10px] font-bold text-zinc-600 bg-white/1 border border-white/5 rounded-full px-3 py-1 uppercase tracking-widest flex items-center gap-1.5">
+                        <Lock className="w-3 h-3 text-blue-500" /> E2E direct P2P link verified
+                      </span>
+                      {burnModeActive && (
+                        <span className="text-[9px] font-bold text-red-400 bg-red-500/5 border border-red-500/10 rounded-full px-2 py-0.5 uppercase tracking-widest">
+                          ⚡ Volatile Mode: Messages exist strictly in local RAM
+                        </span>
                       )}
+                    </div>
 
-                      {/* Message Composer */}
-                      <div className="p-4 sm:p-5 border-t border-white/10 shrink-0 bg-white/1">
-                        <form onSubmit={(e) => { e.preventDefault(); handleSendMessage(messageText); }} className="flex gap-2">
-                          <input
-                            type="text"
-                            placeholder={`Write encrypted message to ${activePeer.username}...`}
-                            value={messageText}
-                            onChange={(e) => setMessageText(e.target.value)}
-                            className="flex-grow bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-blue-500/40 transition-all duration-200"
-                          />
-                          <button
-                            type="submit"
-                            className="bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl px-5 flex items-center justify-center transition-all duration-200 active:scale-95 shadow-[0_2px_8px_rgba(59,130,246,0.3)] cursor-pointer"
-                          >
-                            <Send className="w-4 h-4" />
-                          </button>
-                        </form>
+                    {(messages[activePeer.connectId] || []).length === 0 ? (
+                      <div className="flex flex-col items-center justify-center py-20 text-center text-zinc-600 gap-2">
+                        <MessageSquare className="w-10 h-10 text-zinc-800" />
+                        <p className="text-2xs uppercase tracking-wider">Secure channel open. Start typing below.</p>
                       </div>
-                    </>
-                  ) : (
-                    /* ==========================================
-                        TAB 2: P2P NEON CREATIVE SANDBOX
-                       ========================================== */
-                    <div className="flex-grow flex flex-col h-full overflow-hidden relative bg-black/20">
-                      
-                      {/* Canvas Tool Belt header */}
-                      <div className="p-3 border-b border-white/5 flex flex-wrap items-center justify-between gap-4 bg-white/1 shrink-0 px-4 sm:px-5">
-                        <div className="flex items-center gap-3.5">
-                          <span className="text-[10px] font-black uppercase text-zinc-400 tracking-wider">Colors:</span>
-                          <div className="flex items-center gap-2">
-                            {[
-                              { code: '#3b82f6', label: 'Neon Blue' },
-                              { code: '#10b981', label: 'Neon Green' },
-                              { code: '#ec4899', label: 'Neon Pink' },
-                              { code: '#f59e0b', label: 'Neon Amber' },
-                              { code: '#ffffff', label: 'Ghost White' }
-                            ].map((c) => (
-                              <button
-                                key={c.code}
-                                onClick={() => setBrushColor(c.code)}
-                                className={`w-5 h-5 rounded-full border transition-all duration-200 active:scale-95 cursor-pointer ${
-                                  brushColor === c.code 
-                                    ? 'border-white scale-110 shadow-[0_0_10px_currentColor]' 
-                                    : 'border-white/10 hover:border-white/30'
-                                }`}
-                                style={{ backgroundColor: c.code, color: c.code }}
-                                title={c.label}
-                              />
-                            ))}
-                          </div>
-                        </div>
+                    ) : (
+                      (messages[activePeer.connectId] || []).map((msg, index) => {
+                        const isMe = msg.senderConnectId === currentUser?.connectId;
+                        const date = new Date(msg.timestamp);
+                        const timeString = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                        const isHeld = heldBubbleIndex === index;
 
-                        <div className="flex items-center gap-4">
-                          <div className="flex items-center gap-2">
-                            <span className="text-[10px] font-black uppercase text-zinc-400 tracking-wider">Brush:</span>
-                            <input
-                              type="range"
-                              min={2}
-                              max={15}
-                              value={brushSize}
-                              onChange={(e) => setBrushSize(Number(e.target.value))}
-                              className="w-20 sm:w-28 h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-blue-500"
-                            />
-                            <span className="text-[10px] font-mono text-zinc-400 w-4">{brushSize}px</span>
-                          </div>
-
-                          <button
-                            onClick={handlePurgeSandbox}
-                            className="px-3 py-1 rounded-lg border border-red-500/20 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-[10px] font-black uppercase tracking-widest transition-all duration-200 cursor-pointer"
+                        return (
+                          <div
+                            key={index}
+                            className={`flex flex-col max-w-[75%] ${isMe ? 'ml-auto items-end' : 'mr-auto items-start'}`}
                           >
-                            Purge Sandbox
-                          </button>
-                        </div>
-                      </div>
+                            {/* ANTI-SNOOP BLUR INTERACTIVE MESSAGE BUBBLE */}
+                            <div
+                              onMouseDown={() => setHeldBubbleIndex(index)}
+                              onMouseUp={() => setHeldBubbleIndex(null)}
+                              onMouseLeave={() => setHeldBubbleIndex(null)}
+                              onTouchStart={() => setHeldBubbleIndex(index)}
+                              onTouchEnd={() => setHeldBubbleIndex(null)}
+                              className={`p-3 rounded-2xl text-xs leading-relaxed transition-all duration-300 relative select-none cursor-pointer ${
+                                isMe 
+                                  ? 'bg-blue-600 text-white rounded-tr-none shadow-[0_2px_8px_rgba(59,130,246,0.2)]' 
+                                  : 'bg-white/5 border border-white/10 text-zinc-100 rounded-tl-none'
+                              } ${!isHeld && !isMe ? 'filter blur-[3px] font-mono tracking-widest text-zinc-500/80 bg-white/2' : ''}`}
+                            >
+                              {isMe ? msg.text : (isHeld ? msg.text : msg.scrambledText)}
 
-                      {/* Canvas drawing container */}
-                      <div className="flex-grow relative overflow-hidden flex items-center justify-center p-4">
-                        
-                        {sandboxGlitch && (
-                          <div className="absolute inset-0 bg-red-950/80 z-20 flex items-center justify-center animate-glitch pointer-events-none">
-                            <span className="text-red-500 text-xs font-black uppercase tracking-[0.3em]">PURGING SANDBOX CANVAS...</span>
-                          </div>
-                        )}
-
-                        {!sandboxActive && (
-                          <div className="absolute inset-0 z-10 bg-zinc-950/70 backdrop-blur-xs flex flex-col items-center justify-center text-center p-4">
-                            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-emerald-500 mb-3" />
-                            <h4 className="text-xs uppercase font-black text-emerald-400 tracking-widest">Opening P2P Sandbox Pipe...</h4>
-                            <p className="text-[10px] text-zinc-500 mt-1 uppercase tracking-wider max-w-2xs">Establishing direct WebRTC DataChannel connection</p>
-                          </div>
-                        )}
-
-                        <canvas
-                          ref={canvasRef}
-                          onMouseDown={startDrawing}
-                          onMouseMove={draw}
-                          onMouseUp={stopDrawing}
-                          onMouseLeave={handleMouseLeave}
-                          onTouchStart={startDrawing}
-                          onTouchMove={draw}
-                          onTouchEnd={stopDrawing}
-                          className="w-full h-full bg-zinc-950/30 border border-white/5 rounded-2xl cursor-crosshair shadow-inner"
-                        />
-
-                        {/* Peer drawing active cursor indicator */}
-                        {peerDrawingCursor && (
-                          <div 
-                            className="absolute pointer-events-none z-10 transition-all duration-75 ease-out select-none"
-                            style={{ 
-                              left: peerDrawingCursor.x, 
-                              top: peerDrawingCursor.y,
-                            }}
-                          >
-                            <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping absolute" />
-                            <div className="w-2 h-2 rounded-full bg-emerald-500" />
-                            <div className="ml-3 mt-1.5 px-2 py-0.5 bg-zinc-900/90 border border-emerald-500/25 rounded-md text-[9px] font-black uppercase text-emerald-400 tracking-widest whitespace-nowrap shadow-md antigravity-2">
-                              {activePeer.username}
+                              {!isHeld && !isMe && (
+                                <div className="absolute inset-0 flex items-center justify-center bg-black/10 rounded-2xl opacity-0 hover:opacity-100 transition-opacity duration-200">
+                                  <EyeOff className="w-4 h-4 text-zinc-400" />
+                                </div>
+                              )}
                             </div>
+                            
+                            <span className="text-[9px] text-zinc-600 font-medium mt-1 uppercase tracking-wider block">
+                              {timeString}
+                            </span>
                           </div>
-                        )}
+                        );
+                      })
+                    )}
+                    <div ref={messagesEndRef} />
+                  </div>
 
+                  {/* Contextual Smart Replies Panel */}
+                  {smartReplies.length > 0 && (
+                    <div className="px-4 sm:px-5 py-2 flex flex-wrap items-center gap-2 border-t border-white/5 bg-black/20 shrink-0">
+                      <div className="flex items-center gap-1.5 text-[9px] text-blue-400 font-bold uppercase tracking-widest select-none mr-2 shrink-0">
+                        <Cpu className="w-3.5 h-3.5 animate-spin" style={{ animationDuration: '4s' }} />
+                        <span>AI replies:</span>
                       </div>
-
+                      {smartReplies.map((reply, i) => (
+                        <button
+                          key={i}
+                          onClick={() => handleSendMessage(reply)}
+                          className="px-3 py-1.5 rounded-full border border-white/5 bg-white/2 hover:bg-white/5 hover:border-blue-500/30 text-zinc-300 hover:text-white text-[10px] font-semibold transition-all duration-200 cursor-pointer active:scale-95 animate-hero-title"
+                          style={{ animationDelay: `${i * 150}ms` }}
+                        >
+                          {reply}
+                        </button>
+                      ))}
+                      {lastAnalyzedSentiment && (
+                        <span className="font-mono text-[9px] text-zinc-500 ml-auto select-none uppercase tracking-wider">
+                          {lastAnalyzedSentiment}
+                        </span>
+                      )}
                     </div>
                   )}
 
+                  {/* Message Composer */}
+                  <div className="p-4 sm:p-5 border-t border-white/10 shrink-0 bg-white/1">
+                    <form onSubmit={(e) => { e.preventDefault(); handleSendMessage(messageText); }} className="flex gap-2">
+                      <input
+                        type="file"
+                        ref={fileInputRef}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) streamFileP2P(file);
+                        }}
+                        className="hidden"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={fileTransfer !== null}
+                        className="p-3 bg-white/5 border border-white/10 hover:bg-white/10 hover:border-zinc-500 hover:text-white text-zinc-400 rounded-xl flex items-center justify-center transition-all duration-200 cursor-pointer active:scale-95 disabled:opacity-50"
+                        title="Share File (Direct P2P)"
+                      >
+                        <UploadCloud className="w-4 h-4 text-blue-400" />
+                      </button>
+                      <input
+                        type="text"
+                        placeholder={`Write encrypted message to ${activePeer.username}...`}
+                        value={messageText}
+                        onChange={(e) => setMessageText(e.target.value)}
+                        className="flex-grow bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-blue-500/40 transition-all duration-200"
+                      />
+                      <button
+                        type="submit"
+                        className="bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl px-5 flex items-center justify-center transition-all duration-200 active:scale-95 shadow-[0_2px_8px_rgba(59,130,246,0.3)] cursor-pointer"
+                      >
+                        <Send className="w-4 h-4" />
+                      </button>
+                    </form>
+                  </div>
                 </div>
               ) : (
                 /* Idle Active Workspace (AI Core status rings) */
