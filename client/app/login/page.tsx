@@ -28,6 +28,19 @@ export default function LoginPage() {
   const [generatedUser, setGeneratedUser] = useState<{ username: string; connectId: string } | null>(null);
   const [copied, setCopied] = useState(false);
 
+  // Redirect to chat if already authenticated
+  useEffect(() => {
+    const savedUser = localStorage.getItem('connect_x_user');
+    if (savedUser) {
+      try {
+        JSON.parse(savedUser);
+        router.push('/chat');
+      } catch (e) {
+        localStorage.removeItem('connect_x_user');
+      }
+    }
+  }, [router]);
+
   // Clear errors when switching tabs
   useEffect(() => {
     setError('');

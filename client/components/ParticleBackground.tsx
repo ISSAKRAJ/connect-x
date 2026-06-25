@@ -31,16 +31,16 @@ export default function ParticleBackground() {
 
     const initParticles = () => {
       particles = [];
-      const count = Math.floor((canvas.width * canvas.height) / 12000); // density
+      const count = Math.floor((canvas.width * canvas.height) / 25000); // reduced density for enterprise look
       for (let i = 0; i < count; i++) {
         particles.push({
           x: Math.random() * canvas.width,
           y: Math.random() * canvas.height,
-          vx: (Math.random() - 0.5) * 0.15, // extremely slow drifting
-          vy: (Math.random() - 0.5) * 0.15,
-          radius: Math.random() * 2 + 0.5, // small dust particles
-          alpha: Math.random() * 0.4 + 0.1,
-          alphaSpeed: (Math.random() * 0.002) + 0.001,
+          vx: (Math.random() - 0.5) * 0.03, // near-zero drift speed
+          vy: (Math.random() - 0.5) * 0.03,
+          radius: Math.random() * 1.5 + 0.5, // small subtle dust particles
+          alpha: Math.random() * 0.3 + 0.1,
+          alphaSpeed: (Math.random() * 0.001) + 0.0005,
         });
       }
     };
