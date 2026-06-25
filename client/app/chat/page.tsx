@@ -50,7 +50,14 @@ const getBackendUrl = () => {
   }
   if (typeof window === 'undefined') return 'http://localhost:5000';
   const hostname = window.location.hostname;
-  return `http://${hostname}:5000`;
+  
+  // Local development detection
+  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    return `http://${hostname}:5000`;
+  }
+  
+  // Production fallback
+  return 'https://connect-x-backend-a7om.onrender.com';
 };
 
 const BACKEND_URL = getBackendUrl();
